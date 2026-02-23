@@ -373,7 +373,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     }
   }
 
-  Future<void> _showActionPicker() async {
+ Future<void> _showActionPicker() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
@@ -392,6 +392,9 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     
     String? lastSession;
     bool hasClockedOut = false;
+    
+    // 🟢 1. 计算最近一次打卡时间
+    DateTime? lastPunchTime;
 
     if (hasAnyRecord) {
       final docs = q.docs;
@@ -399,11 +402,40 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       final last = docs.last;
       
       lastSession = last['session'];
+      lastPunchTime = (last['timestamp'] as Timestamp).toDate(); // 获取上次打卡时间
       
       hasClockedOut = docs.any((doc) => doc['session'] == 'Clock Out');
     }
 
     if (!mounted) return;
+
+    // 🟢 2. 执行 30 分钟防抖检查 (Cooldown Check)
+    if (lastPunchTime != null) {
+      final difference = now.difference(lastPunchTime);
+      if (difference.inMinutes < 30) {
+        final waitMinutes = 30 - difference.inMinutes;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.timer, color: Colors.orange),
+                SizedBox(width: 10),
+                Text("Action Locked"),
+              ],
+            ),
+            content: Text("Please wait $waitMinutes more minutes before your next action to prevent duplicate records."),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text("OK"),
+              )
+            ],
+          ),
+        );
+        return; // 拦截执行，不再弹出下方选择框
+      }
+    }
 
     showModalBottomSheet(
       context: context,
@@ -569,7 +601,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       duration: const Duration(seconds: 2),
     ));
 
-    await _processUploadWithRetry(
+    await _processUpload(
       uid: uid,
       email: email,
       name: name,
@@ -584,15 +616,14 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       });
     }
   }
-
-  Future<void> _processUploadWithRetry({
+// 🟢 替换原来的 _processUploadWithRetry 函数
+  Future<void> _processUpload({
     required String uid,
     required String email,
     required String name,
     required XFile file,
     required String action,
     required DateTime timestamp,
-    int attempt = 1,
   }) async {
     try {
       Position? position = await _determinePosition();
@@ -607,6 +638,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
           .child(uid)
           .child(fileName);
       
+      // 上传照片
       await storageRef.putFile(File(file.path));
       String photoUrl = await storageRef.getDownloadURL();
 
@@ -640,9 +672,10 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
         newRecord['timeOutStr'] = timeStr;
       }
 
+      // 写入打卡记录 (Firebase 会自动处理断网延迟上传)
       await FirebaseFirestore.instance.collection('attendance').add(newRecord);
 
-      // 🟢 2. 使用 ref.read 访问 Riverpod 状态来触发追踪的开启或停止
+      // 触发追踪状态更新
       if (action == 'Clock In') {
         ref.read(trackingProvider.notifier).startTracking(uid);
       } else if (action == 'Break Out') {
@@ -660,30 +693,19 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       }
 
     } catch (e) {
-      debugPrint("Upload failed (Attempt $attempt): $e");
-      
-      if (attempt < 3) {
-        int delay = attempt * 3;
-        await Future.delayed(Duration(seconds: delay));
-        await _processUploadWithRetry(
-          uid: uid, email: email, name: name, 
-          file: file, action: action, timestamp: timestamp, 
-          attempt: attempt + 1
+      debugPrint("Upload failed: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Upload Failed. Please check your connection or try again later."), 
+            backgroundColor: Colors.red,
+          ),
         );
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Upload Failed. Please check connection."), 
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
       }
     }
   }
-
-  Future<String> _fetchAddressString(Position position) async {
+  
+    Future<String> _fetchAddressString(Position position) async {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
       if (placemarks.isNotEmpty) {

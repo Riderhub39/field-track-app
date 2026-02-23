@@ -4,15 +4,13 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 引入 Riverpod
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'notification_service.dart';
 
-// 🟢 1. 定义全局 Riverpod Provider，替代旧的 Singleton 模式
 final trackingProvider = NotifierProvider<TrackingNotifier, bool>(() {
   return TrackingNotifier();
 });
 
-// 🟢 2. 使用 Riverpod 的 Notifier 管理状态 (状态本身是一个 bool: isTracking)
 class TrackingNotifier extends Notifier<bool> {
   StreamSubscription<Position>? _positionStream;
   String? _currentUserId;
@@ -21,44 +19,25 @@ class TrackingNotifier extends Notifier<bool> {
   static const double _uploadDistanceFilter = 200.0;
   Timer? _autoStopTimer;
 
-  // 📍 智能地理围栏 (Geofencing) 变量
   double? _officeLat;
   double? _officeLng;
   double _officeRadius = 500.0;
-  bool? _wasInsideOffice; // 记录上次状态，用于判断是“进入”还是“离开”
+  bool? _wasInsideOffice;
 
   @override
   bool build() {
-    return false; // 初始状态：未在追踪
+    return false;
   }
 
   /// 🔄 恢复会话 (App 启动时调用)
   Future<void> resumeTrackingSession(String authUid) async {
-    try {
-      final now = DateTime.now();
-      final todayStr = DateFormat('yyyy-MM-dd').format(now);
-
-      final q = await FirebaseFirestore.instance
-          .collection('attendance')
-          .where('uid', isEqualTo: authUid)
-          .where('date', isEqualTo: todayStr)
-          .get();
-
-      if (q.docs.isNotEmpty) {
-        final data = q.docs.first.data();
-        if (data['clockIn'] != null && data['clockOut'] == null) {
-          debugPrint("🔄 Resuming tracking session for $authUid");
-          startTracking(authUid);
-        }
-      }
-    } catch (e) {
-      debugPrint("Error resuming tracking: $e");
-    }
+    // 复用增强后的 startTracking 逻辑，因为它自带了状态检查
+    await startTracking(authUid);
   }
 
-  /// ▶️ 开始追踪 (包含权限验证与围栏初始化)
+  /// ▶️ 开始追踪 (包含权限验证、防漏追踪、初始点生成)
   Future<void> startTracking(String userId) async {
-    if (state) return; // 如果已经在追踪，直接返回
+    if (state) return; 
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -67,8 +46,8 @@ class TrackingNotifier extends Notifier<bool> {
 
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
       
-      // 检查是否为司机
       try {
+        // 1. 检查是否为司机
         final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: userId).limit(1).get();
 
         if (userQuery.docs.isNotEmpty) {
@@ -82,35 +61,67 @@ class TrackingNotifier extends Notifier<bool> {
         } else {
           return;
         }
+
+        // 🟢 2. 终极安全网：检查今天最后一次打卡状态
+        final now = DateTime.now();
+        final todayStr = DateFormat('yyyy-MM-dd').format(now);
+        final attQuery = await FirebaseFirestore.instance
+            .collection('attendance')
+            .where('uid', isEqualTo: userId)
+            .where('date', isEqualTo: todayStr)
+            .get();
+
+        if (attQuery.docs.isNotEmpty) {
+          final docs = attQuery.docs;
+          docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
+          final lastRecord = docs.last.data();
+          final lastSession = lastRecord['session'];
+
+          // 如果最后一次动作是下班或外出，则坚决不追踪
+          if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
+            debugPrint("🚫 User is currently Clocked Out or Break Out. Tracking aborted.");
+            return;
+          }
+        }
       } catch (e) {
+        debugPrint("Tracking verification failed: $e");
         return; 
       }
 
-      // 🟢 获取公司办公区坐标，用于智能围栏
       await _fetchOfficeLocation();
 
       _currentUserId = userId;
       _lastUploadedPosition = null; 
-      _wasInsideOffice = null; // 重置围栏状态
-      
+      _wasInsideOffice = null; 
+      state = true; // 状态置为正在追踪
+
       final prefs = await SharedPreferences.getInstance();
       final bool shouldNotify = prefs.getBool('notifications_enabled') ?? true;
-      
       if (shouldNotify) {
         await NotificationService().showTrackingNotification();
       }
 
+      // 🟢 3. 初始破冰点 (Initial Point): 解决一直不移动导致的流不触发问题
+      try {
+        Position initialPos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
+        );
+        await _uploadLocationAndCheckGeofence(initialPos, forceUpload: true);
+        debugPrint("📍 Initial tracking point generated.");
+      } catch (e) {
+        debugPrint("Could not get initial position: $e");
+      }
+
       const LocationSettings locationSettings = LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10, 
+        distanceFilter: 10, // 这里的距离过滤器只是为了让Stream少触发，真正的上传防抖在 _uploadLocationAndCheckGeofence 里
       );
 
       _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings)
           .listen((Position position) {
-        _uploadLocationAndCheckGeofence(position); // 🟢 更新位置并检查围栏
+        _uploadLocationAndCheckGeofence(position); 
       });
 
-      state = true; // 🟢 Riverpod 触发状态更新，UI会自动响应
       _scheduleAutoStop(userId); 
       debugPrint("✅ Tracking Started (Driver Verified & Geofence Active)");
     } else {
@@ -127,13 +138,13 @@ class TrackingNotifier extends Notifier<bool> {
     _lastUploadedPosition = null;
     _wasInsideOffice = null;
     
-    state = false; // 🟢 Riverpod 触发状态更新
+    state = false; 
     
     await NotificationService().cancelTrackingNotification();
     debugPrint("🛑 Tracking Stopped");
   }
 
-  /// 🏢 拉取公司坐标 (Geofencing)
+  /// 🏢 拉取公司坐标
   Future<void> _fetchOfficeLocation() async {
     try {
       final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get();
@@ -142,18 +153,17 @@ class TrackingNotifier extends Notifier<bool> {
         _officeLat = (data['latitude'] as num?)?.toDouble();
         _officeLng = (data['longitude'] as num?)?.toDouble();
         _officeRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
-        debugPrint("🏢 Office Geofence loaded: $_officeLat, $_officeLng (Radius: $_officeRadius m)");
       }
     } catch (e) {
-      debugPrint("Error fetching office location for geofence: $e");
+      debugPrint("Error fetching office location: $e");
     }
   }
 
   /// ☁️ 核心逻辑：上传位置 + 地理围栏检测
-  Future<void> _uploadLocationAndCheckGeofence(Position pos) async {
+  /// 增加 `forceUpload` 参数，用于强制写入初始坐标
+  Future<void> _uploadLocationAndCheckGeofence(Position pos, {bool forceUpload = false}) async {
     if (_currentUserId == null) return;
 
-    // 📍 1. 智能地理围栏检测 (Smart Geofencing)
     if (_officeLat != null && _officeLng != null) {
       double distanceToOffice = Geolocator.distanceBetween(
         pos.latitude, pos.longitude, _officeLat!, _officeLng!
@@ -162,25 +172,21 @@ class TrackingNotifier extends Notifier<bool> {
       bool isInside = distanceToOffice <= _officeRadius;
 
       if (_wasInsideOffice == false && isInside) {
-        // 触发进入围栏提醒
-        debugPrint("📍 User ENTERED geofence");
         NotificationService().showGeofenceAlert(
           "Welcome to the Office! 🏢", 
           "You have entered the work zone. Please remember to clock in."
         );
       } else if (_wasInsideOffice == true && !isInside) {
-        // 触发离开围栏提醒
-        debugPrint("📍 User EXITED geofence");
         NotificationService().showGeofenceAlert(
           "Leaving the Office? 🚗", 
           "You are leaving the work zone. Don't forget to clock out if your shift is over."
         );
       }
-      _wasInsideOffice = isInside; // 更新状态
+      _wasInsideOffice = isInside; 
     }
 
-    // ☁️ 2. 上传距离过滤 (200米才上传数据库，防扣费)
-    if (_lastUploadedPosition != null) {
+    // ☁️ 距离过滤 (默认200米才上传)
+    if (!forceUpload && _lastUploadedPosition != null) {
       double distanceMoved = Geolocator.distanceBetween(
         _lastUploadedPosition!.latitude, _lastUploadedPosition!.longitude,
         pos.latitude, pos.longitude,
@@ -188,7 +194,7 @@ class TrackingNotifier extends Notifier<bool> {
       if (distanceMoved < _uploadDistanceFilter) return; 
     }
 
-    // 💾 3. 写入 Firebase
+    // 💾 写入 Firebase
     final now = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     final batch = FirebaseFirestore.instance.batch();
@@ -239,19 +245,15 @@ class TrackingNotifier extends Notifier<bool> {
       if (mySchedule.isNotEmpty) {
         Timestamp endTs = mySchedule.first.data()['end']; 
         DateTime shiftEnd = endTs.toDate();
-        forceStopTime = shiftEnd.add(const Duration(hours: 1)); // 下班后1小时自动关
+        forceStopTime = shiftEnd.add(const Duration(hours: 1)); 
       } else {
-        forceStopTime = now.add(const Duration(hours: 12)); // 默认12小时
+        forceStopTime = now.add(const Duration(hours: 12)); 
       }
 
       final duration = forceStopTime.difference(DateTime.now());
 
       if (duration.isNegative) {
-        _autoStopTimer = Timer(const Duration(hours: 1), () {
-            // Because we are inside a Notifier, we can call methods directly, but we can't access `ref` without passing it.
-            // Since stopTracking just updates internal state and `state = false`, it's safe.
-            stopTracking(); 
-        });
+        _autoStopTimer = Timer(const Duration(hours: 1), stopTracking);
       } else {
         _autoStopTimer = Timer(duration, stopTracking);
       }
