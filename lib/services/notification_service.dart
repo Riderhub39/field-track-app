@@ -256,11 +256,14 @@ class NotificationService {
       _trackingChannelId,
       'GPS Tracking Service',
       channelDescription: 'Running in background to track location',
-      importance: Importance.low,
+      importance: Importance.low, // 保持低重要性，避免打扰
       priority: Priority.low,
-      ongoing: true,
-      autoCancel: false,
+      ongoing: true,      // 🟢 核心：设置为常驻通知，用户无法通过侧滑清除
+      autoCancel: false,  // 🟢 核心：禁止点击通知后自动取消
       showWhen: true,
+      usesChronometer: true, // 🟢 增强：显示已追踪时间，增加透明度
+      onlyAlertOnce: true,   // 🟢 优化：多次更新通知时只响/震一次
+      icon: '@mipmap/ic_launcher', // 确保图标正确显示
     );
 
     const NotificationDetails details = NotificationDetails(android: androidDetails);
@@ -272,7 +275,6 @@ class NotificationService {
       details,
     );
   }
-
   Future<void> cancelTrackingNotification() async {
     await _notificationsPlugin.cancel(_trackingId);
   }
