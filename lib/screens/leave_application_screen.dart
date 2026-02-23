@@ -147,8 +147,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
   }
 
   Future<bool> _checkForDuplicateLeave(String uid, DateTime start, DateTime end) async {
-    // 🟢 NEW: Check if any APPROVED leave overlaps with the selected dates
-    // Note: Firestore range queries are limited, so we fetch active leaves and filter in Dart for safety.
     final q = await FirebaseFirestore.instance
         .collection('leaves')
         .where('authUid', isEqualTo: uid)
@@ -160,14 +158,14 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
       DateTime existingStart = DateTime.parse(data['startDate']);
       DateTime existingEnd = DateTime.parse(data['endDate']);
 
-      // Check overlap: (StartA <= EndB) and (EndA >= StartB)
       if (start.isBefore(existingEnd.add(const Duration(days: 1))) && end.isAfter(existingStart.subtract(const Duration(days: 1)))) {
-        return true; // Overlap found
+        return true; 
       }
     }
     return false;
   }
 
+  // 🟢 优化后的提交函数：完美处理无附件/防崩溃
   Future<void> _submitApplication() async {
     if (!_formKey.currentState!.validate()) return;
     
@@ -182,9 +180,8 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
        return;
     }
 
-    // 🟢 FIX: Handle Unpaid Leave & Null Checks safely
+    // 1. 余额检查 (仅针对年假)
     if (_leaveTypeKey == 'leave.type_annual') {
-      // Safely access map with null check
       int annualBal = (_balances['annual'] is int) ? _balances['annual'] : 0;
       if (annualBal < days) {
         _showSnack("leave.error_insufficient".tr(args: [days.toString(), annualBal.toString()]));
@@ -192,6 +189,7 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
       }
     }
 
+    // 2. 证据检查 (仅针对病假)
     if (_leaveTypeKey == 'leave.type_medical' && _selectedFile == null) {
       _showSnack("leave.error_upload_evidence".tr()); 
       return;
@@ -201,30 +199,36 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
 
     try {
       final user = FirebaseAuth.instance.currentUser;
-      if (user == null) return;
+      if (user == null) {
+        throw "User not authenticated";
+      }
 
-      // 🟢 NEW: Duplicate Check Trigger
+      // 3. 重复请假检查
       bool isDuplicate = await _checkForDuplicateLeave(user.uid, _startDate!, _endDate!);
       if (isDuplicate) {
-        // 
         _showSnack("You already have an approved leave for these dates.");
         setState(() => _isLoading = false);
         return;
       }
 
-      QuerySnapshot q = await FirebaseFirestore.instance.collection('users').where('personal.email', isEqualTo: user.email).limit(1).get();
-      // Try fetch by authUid if email fails
-      if (q.docs.isEmpty) {
-         q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: user.uid).limit(1).get();
-      }
-      
-      if (q.docs.isEmpty) throw "User profile not found";
-      
-      final userDoc = q.docs.first;
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final String empCode = userDoc.id; 
-      String empName = userData['personal']?['name'] ?? 'Staff';
+      // 4. 更安全的获取用户资料
+      String empCode = user.uid; 
+      String empName = 'Staff';
+      String empEmail = user.email ?? "no-email@system.com";
 
+      QuerySnapshot q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: user.uid).limit(1).get();
+      
+      if (q.docs.isNotEmpty) {
+        final userDoc = q.docs.first;
+        final userData = userDoc.data() as Map<String, dynamic>;
+        empCode = userDoc.id; 
+        empName = userData['personal']?['name'] ?? 'Staff';
+        empEmail = userData['personal']?['email'] ?? empEmail;
+      } else {
+        throw "User profile not found in database";
+      }
+
+      // 5. 处理附件上传
       String? attachmentUrl;
       String? fileType; 
 
@@ -245,11 +249,12 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         fileType = ext; 
       }
 
-      await FirebaseFirestore.instance.collection('leaves').add({
+      // 6. 干净的数据载荷写入
+      Map<String, dynamic> leaveData = {
         'uid': empCode,
         'authUid': user.uid,
         'empName': empName,
-        'email': user.email,
+        'email': empEmail,
         'type': _getStandardEnglishType(_leaveTypeKey),
         'startDate': DateFormat('yyyy-MM-dd').format(_startDate!),
         'endDate': DateFormat('yyyy-MM-dd').format(_endDate!),
@@ -258,14 +263,23 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         'status': 'Pending',
         'appliedAt': FieldValue.serverTimestamp(),
         'isPayrollDeductible': (_leaveTypeKey == 'leave.type_unpaid'),
-        'attachmentUrl': attachmentUrl,
-        'fileType': fileType, 
-      });
+      };
+
+      // 🟢 关键修复：只有当有附件时才写入相关字段，防止无薪假引发 Null 问题
+      if (attachmentUrl != null) {
+        leaveData['attachmentUrl'] = attachmentUrl;
+        leaveData['fileType'] = fileType;
+      }
+
+      await FirebaseFirestore.instance.collection('leaves').add(leaveData);
 
       if (mounted) {
         _showSnack("leave.msg_submit_success".tr());
         setState(() {
-          _startDate = null; _endDate = null; _selectedFile = null; _reasonController.clear();
+          _startDate = null; 
+          _endDate = null; 
+          _selectedFile = null; 
+          _reasonController.clear();
         });
         DefaultTabController.of(context).animateTo(1);
       }
@@ -464,7 +478,8 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     }
 
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseFirestore.instance.collection('leaves').where('email', isEqualTo: user.email).snapshots(),
+      // 🟢 修复了这里使用 email 导致旧记录缺失的问题，改为使用 authUid 搜索
+      stream: FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: user.uid).snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());

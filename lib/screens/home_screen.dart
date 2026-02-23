@@ -8,7 +8,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
 import 'package:shared_preferences/shared_preferences.dart'; 
 import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 1. 引入 Riverpod
-
+import 'package:url_launcher/url_launcher.dart';
 import '../widgets/custom_profile_camera.dart';
 import 'camera_screen.dart';
 import 'attendance_screen.dart';
@@ -17,7 +17,6 @@ import 'profile_screen.dart';
 import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
 import 'login_screen.dart'; 
-
 import '../services/tracking_service.dart'; // 包含 trackingProvider 和 TrackingNotifier
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart'; 
@@ -161,7 +160,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _listenForAnnouncements() {
+ void _listenForAnnouncements() {
     _announcementSubscription = FirebaseFirestore.instance
         .collection('announcements')
         .orderBy('createdAt', descending: true)
@@ -172,12 +171,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       final data = snapshot.docs.first.data();
       final String message = data['message'] ?? '';
+      final String title = data['title'] ?? 'settings.announcement_title'.tr(); // 🟢 读取新加的 title
+      final String? attachmentUrl = data['attachmentUrl']; // 🟢 读取新加的附件 URL
       final Timestamp? createdAt = data['createdAt'];
       
       if (createdAt == null || message.isEmpty) return;
 
       final prefs = await SharedPreferences.getInstance();
-      final lastShownTime = prefs.getInt('last_announcement_time') ?? 0;
+      
+      // 读取缓存。如果没有记录（第一次登录），则为 null
+      int? lastShownTime = prefs.getInt('last_announcement_time');
+
+      if (lastShownTime == null) {
+        // 防打扰机制：如果是全新安装，直接把当前时间设为基准点，不弹旧公告
+        lastShownTime = DateTime.now().millisecondsSinceEpoch;
+        await prefs.setInt('last_announcement_time', lastShownTime);
+        return; 
+      }
       
       if (createdAt.millisecondsSinceEpoch > lastShownTime) {
         
@@ -192,19 +202,68 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   const Icon(Icons.campaign, color: Colors.orange),
                   const SizedBox(width: 10),
-                  Text('announcement.title'.tr()), 
+                  // 🟢 动态显示标题
+                  Expanded(
+                    child: Text(
+                      title, 
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  ), 
                 ],
               ),
               content: SingleChildScrollView(
-                child: Text(
-                  message, 
-                  style: const TextStyle(fontSize: 15),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      message, 
+                      style: const TextStyle(fontSize: 15),
+                    ),
+                    // 🟢 如果有附件，在下方渲染出来
+                    if (attachmentUrl != null && attachmentUrl.isNotEmpty) ...[
+                      const SizedBox(height: 15),
+                      const Divider(),
+                      const SizedBox(height: 5),
+                      InkWell(
+                        onTap: () async {
+                          // 🟢 提前捕获 ScaffoldMessenger，完美解决 context 跨异步警告
+                          final messenger = ScaffoldMessenger.of(context); 
+                          final Uri url = Uri.parse(attachmentUrl);
+                          if (await canLaunchUrl(url)) {
+                            await launchUrl(url, mode: LaunchMode.externalApplication);
+                          } else {
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('Could not open attachment.'))
+                            );
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withValues(alpha:0.1),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.blue.withValues(alpha:0.3))
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.attach_file, color: Colors.blue, size: 18),
+                              SizedBox(width: 8),
+                              Text("View Attachment", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13)),
+                            ],
+                          ),
+                        ),
+                      )
+                    ]
+                  ],
                 ),
               ),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(context),
-                  child: const Text("OK"),
+                  child: const Text("OK", style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
               ],
             ),
@@ -214,6 +273,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
+  
   Future<void> _checkBiometricSetup() async {
     final prefs = await SharedPreferences.getInstance();
 
