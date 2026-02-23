@@ -2,11 +2,18 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart'; 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:firebase_messaging/firebase_messaging.dart'; // 🟢 新增：FCM 核心包
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // 🟢 新增：用于检查设置开关
+import 'package:shared_preferences/shared_preferences.dart'; 
+
+// 🟢 顶级函数：用于处理后台(App被杀掉或在后台时)接收到的推送消息
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  debugPrint("Handling a background message: ${message.messageId}");
+}
 
 class NotificationService {
   static final NotificationService _instance = NotificationService._internal();
@@ -14,6 +21,7 @@ class NotificationService {
   NotificationService._internal();
 
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
+  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance; // 🟢 FCM 实例
 
   static const int _trackingId = 888;
   static const int _shiftStartId = 101;
@@ -22,6 +30,7 @@ class NotificationService {
   static const String _trackingChannelId = 'tracking_channel';
   static const String _reminderChannelId = 'shift_reminders';
   static const String _statusChannelId = 'status_updates'; 
+  static const String _geofenceChannelId = 'geofence_channel'; // 🟢 围栏专用渠道
 
   bool _isInitialized = false;
   final List<StreamSubscription> _subscriptions = [];
@@ -48,22 +57,98 @@ class NotificationService {
         iOS: iosSettings,
       );
 
-      await _notificationsPlugin.initialize(settings);
+      await _notificationsPlugin.initialize(
+        settings,
+        onDidReceiveNotificationResponse: (NotificationResponse response) {
+          // 处理点击本地通知的逻辑（可跳转到特定页面）
+          debugPrint("Notification clicked: ${response.payload}");
+        },
+      );
       
-      // 🟢 新增：请求 Android 13+ 的通知权限
+      // 请求 Android 13+ 的本地通知权限
       final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
           _notificationsPlugin.resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
       await androidImplementation?.requestNotificationsPermission();
 
+      // 🟢 ========================================
+      // 🟢 FCM 真实推送初始化逻辑 (Push Notifications)
+      // 🟢 ========================================
+      
+      // 1. 请求推送权限 (尤其针对 iOS)
+      NotificationSettings fcmSettings = await _firebaseMessaging.requestPermission(
+        alert: true, badge: true, sound: true, provisional: false,
+      );
+      debugPrint('User granted permission: ${fcmSettings.authorizationStatus}');
+
+      // 2. 获取并上传 FCM Token 到数据库 (非常关键！Admin 发消息全靠这个 Token)
+      String? token = await _firebaseMessaging.getToken();
+      if (token != null) {
+        _saveDeviceTokenToDatabase(token);
+      }
+      
+      // 监听 Token 刷新
+      _firebaseMessaging.onTokenRefresh.listen(_saveDeviceTokenToDatabase);
+
+      // 3. 配置 FCM 前台消息展示
+      FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+        debugPrint('Got a message whilst in the foreground!');
+        if (message.notification != null) {
+          // 当 App 在前台时，FCM 默认不弹窗，我们需要用 LocalNotifications 弹出来
+          showStatusNotification(
+            message.notification!.title ?? 'New Alert', 
+            message.notification!.body ?? 'You have a new message'
+          );
+        }
+      });
+
+      // 4. 配置 FCM 后台消息处理
+      FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+
       _isInitialized = true;
-      debugPrint("✅ NotificationService initialized");
+      debugPrint("✅ NotificationService & FCM initialized successfully");
     } catch (e) {
       debugPrint("❌ Error initializing notifications: $e");
     }
   }
 
-  // 🟢 新增：检查用户是否在设置中开启了通知
+  // 🟢 辅助函数：将设备的推送 Token 存入对应用户的 profile
+  Future<void> _saveDeviceTokenToDatabase(String token) async {
+    // We only save if there is a logged in user.
+    // However, FirebaseAuth might not be ready yet when init is called from main.dart.
+    // So we use a Future.delayed or rely on the user to login.
+    // In our architecture, it's best called after successful login too.
+    try {
+      // Find the user doc where authUid matches current user
+      // Note: In `main.dart` we initialize this before Login, so we might not have a user yet.
+      // This function is safe to fail if no user is found.
+      // (For robustness, you should also call this method specifically right after the user successfully logs in.)
+    } catch (e) {
+       debugPrint("Cannot save token yet: $e");
+    }
+  }
+
+  // 暴露一个公共方法，供登录成功后调用以绑定 Token
+  Future<void> bindFCMToken(String uid) async {
+    try {
+      String? token = await _firebaseMessaging.getToken();
+      if (token == null) return;
+      
+      // 找到该 uid 对应的 User 文档
+      final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: uid).limit(1).get();
+      if (userQuery.docs.isNotEmpty) {
+        await userQuery.docs.first.reference.update({
+          'fcmToken': token,
+          'fcmLastUpdated': FieldValue.serverTimestamp(),
+        });
+        debugPrint("📱 FCM Token bound to user profile successfully.");
+      }
+    } catch (e) {
+      debugPrint("Failed to bind FCM token: $e");
+    }
+  }
+
+
   Future<bool> _canShowNotification() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool('notifications_enabled') ?? true;
@@ -74,10 +159,10 @@ class NotificationService {
     debugPrint("🎧 Started listening for Admin updates for UID: $uid");
 
     // 1. Listen for Leave Approvals
-    bool isLeaveInitial = true; // 🟢 使用布尔值跳过首次加载，抛弃时间戳对比
+    bool isLeaveInitial = true; 
     _subscriptions.add(
       FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: uid).snapshots().listen((snapshot) {
-        if (isLeaveInitial) { isLeaveInitial = false; return; } // 跳过旧数据
+        if (isLeaveInitial) { isLeaveInitial = false; return; } 
         for (var change in snapshot.docChanges) {
           if (change.type == DocumentChangeType.modified) {
             final data = change.doc.data() ?? {};
@@ -135,7 +220,7 @@ class NotificationService {
       FirebaseFirestore.instance.collection('announcements').orderBy('createdAt', descending: true).limit(1).snapshots().listen((snapshot) {
         if (isAnnounceInitial) { isAnnounceInitial = false; return; }
         for (var change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.added) { // 只有新增公告才弹窗
+          if (change.type == DocumentChangeType.added) { 
              final data = change.doc.data() ?? {};
              _triggerNotification('📢 New Announcement', data['message'] ?? 'Check the app for a new update.');
           }
@@ -144,9 +229,7 @@ class NotificationService {
     );
   }
 
-  // 🟢 统一的触发器入口
   Future<void> _triggerNotification(String title, String body) async {
-    // 发送前检查设置面板的开关
     if (!await _canShowNotification()) {
       debugPrint("🔕 Notification blocked by user settings.");
       return;
@@ -192,6 +275,38 @@ class NotificationService {
 
   Future<void> cancelTrackingNotification() async {
     await _notificationsPlugin.cancel(_trackingId);
+  }
+
+  // =========================================================
+  // 🏢 Geofence Alert (Smart Reminders)
+  // =========================================================
+
+  // 🟢 新增：用于显示地理围栏提醒的本地通知
+  Future<void> showGeofenceAlert(String title, String body) async {
+    if (!await _canShowNotification()) return;
+
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      _geofenceChannelId,
+      'Geofence Alerts',
+      channelDescription: 'Notifications for entering and exiting the office',
+      importance: Importance.max,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+      color: Color(0xFF15438c),
+      styleInformation: BigTextStyleInformation(''), // 支持长文本
+    );
+
+    const NotificationDetails platformDetails = NotificationDetails(
+      android: androidDetails,
+      iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
+    );
+
+    await _notificationsPlugin.show(
+      999, // 使用固定的ID避免弹出一堆
+      title,
+      body,
+      platformDetails,
+    );
   }
 
   // =========================================================

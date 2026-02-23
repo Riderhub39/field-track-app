@@ -7,6 +7,8 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
 import 'package:shared_preferences/shared_preferences.dart'; 
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 1. 引入 Riverpod
+
 import '../widgets/custom_profile_camera.dart';
 import 'camera_screen.dart';
 import 'attendance_screen.dart';
@@ -14,45 +16,42 @@ import 'settings_screen.dart';
 import 'profile_screen.dart';
 import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
-import 'login_screen.dart'; // 🟢 引入 LoginScreen 以便强制退出时跳转
+import 'login_screen.dart'; 
 
-import '../services/tracking_service.dart';
+import '../services/tracking_service.dart'; // 包含 trackingProvider 和 TrackingNotifier
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart'; 
 
-class HomeScreen extends StatefulWidget {
+// 🟢 2. 将 StatefulWidget 改为 ConsumerStatefulWidget
+class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
   @override
-  State<HomeScreen> createState() => _HomeScreenState();
+  ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+// 🟢 3. 将 State 改为 ConsumerState
+class _HomeScreenState extends ConsumerState<HomeScreen> {
   String _staffName = "Staff";
   String? _faceIdPhotoPath;
 
   StreamSubscription? _announcementSubscription;
-  StreamSubscription? _userStatusSubscription; // 🟢 账号状态监听器
+  StreamSubscription? _userStatusSubscription; 
 
   @override
   void initState() {
     super.initState();
-    // 1. 🟢 启动实时用户状态监听 (替代了原来的单次加载 _loadUserData)
     _listenToUserStatus();
 
-    // 2. Start Notification Listeners
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       NotificationService().startListeningToUserUpdates(user.uid);
     }
     
-    // 3. 启动 App 内公告弹窗监听
     _listenForAnnouncements(); 
 
-    // 4. Check Biometric
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
 
-    // 5. Resume GPS Tracking
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkAndResumeTracking();
     });
@@ -61,11 +60,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _announcementSubscription?.cancel();
-    _userStatusSubscription?.cancel(); // 🟢 销毁页面时取消监听
+    _userStatusSubscription?.cancel(); 
     super.dispose();
   }
 
-  // 🟢 核心安全机制：实时监听用户状态，发现禁用立即踢出
   void _listenToUserStatus() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -80,14 +78,12 @@ class _HomeScreenState extends State<HomeScreen> {
       if (snapshot.docs.isNotEmpty) {
         final data = snapshot.docs.first.data();
 
-        // 🛡️ 安全拦截：检查账号是否被管理员禁用或邮箱/手机被重置导致失活
         final status = data['status'] ?? 'active';
         if (status == 'disabled' || status == 'inactive') {
           _forceLogout(status);
           return;
         }
 
-        // 如果状态正常，更新 UI
         if (mounted) {
           setState(() {
             final personal = data['personal'] as Map<String, dynamic>?;
@@ -106,7 +102,6 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         }
       } else {
-        // 🛡️ 如果 Firestore 中找不到该员工档案 (可能被彻底删除)，同样踢出
         _forceLogout('not_found');
       }
     }, onError: (error) {
@@ -114,27 +109,23 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // 🟢 强制登出并清空所有缓存
   Future<void> _forceLogout(String reason) async {
-    _userStatusSubscription?.cancel(); // 停止监听防止重复弹窗
+    _userStatusSubscription?.cancel(); 
     
-    // 停止后台 GPS
+    // 🟢 4. 使用 Riverpod 的 ref 读取并停止追踪
     try {
-      TrackingService().stopTracking(); 
+      ref.read(trackingProvider.notifier).stopTracking(); 
     } catch (e) {
       debugPrint("Error stopping tracking on force logout: $e");
     }
     
-    // 清除本地缓存 (包括生物识别标记)
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
 
-    // 退出 Firebase Auth
     await FirebaseAuth.instance.signOut();
 
     if (!mounted) return;
 
-    // 弹出无法手动关闭的警告框，并跳转回登录页
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -158,7 +149,6 @@ class _HomeScreenState extends State<HomeScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
             onPressed: () {
               Navigator.of(ctx).pop();
-              // 清空路由栈，跳转到登录界面
               Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (context) => const LoginScreen()),
                 (route) => false,
@@ -277,7 +267,8 @@ class _HomeScreenState extends State<HomeScreen> {
   void _checkAndResumeTracking() {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      TrackingService().resumeTrackingSession(user.uid);
+      // 🟢 5. 使用 Riverpod ref 恢复追踪
+      ref.read(trackingProvider.notifier).resumeTrackingSession(user.uid);
     }
   }
 

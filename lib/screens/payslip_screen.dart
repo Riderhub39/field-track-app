@@ -9,7 +9,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:open_filex/open_filex.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:http/http.dart' as http;
-
+import '../widgets/shimmer_loading.dart';
 // 🟢 导入生物识别服务
 import '../services/biometric_service.dart';
 
@@ -95,7 +95,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                   .get(),
               builder: (context, userSnap) {
                 if (userSnap.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
+                  return const ShimmerLoadingList(itemHeight: 80);
                 }
                 if (!userSnap.hasData || userSnap.data!.docs.isEmpty) {
                   return const Center(child: Text("Profile not linked. Contact Admin."));

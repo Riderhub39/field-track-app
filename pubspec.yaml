@@ -55,6 +55,9 @@ dependencies:
   provider: ^6.1.2
   file_picker: ^10.3.10
   gal: ^2.3.2
+  shimmer: ^3.0.0
+  flutter_riverpod: ^3.2.1
+  firebase_messaging: ^15.2.10
 
 dev_dependencies:
   # 修复 1：这里增加了缩进 (2个空格)

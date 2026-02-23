@@ -12,10 +12,12 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:network_info_plus/network_info_plus.dart'; 
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 引入 Riverpod
 
+import '../widgets/shimmer_loading.dart';
 import '../widgets/face_camera_view.dart';
 import 'correction_request_screen.dart';
-import '../services/tracking_service.dart';
+import '../services/tracking_service.dart'; // 包含 trackingProvider 和 TrackingNotifier
 
 class AttendanceScreen extends StatefulWidget {
   const AttendanceScreen({super.key});
@@ -127,15 +129,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 //  Tab 1: Action Tab (Optimized with Anti-Spam)
 // ==========================================
 
-class AttendanceActionTab extends StatefulWidget {
+// 🟢 1. 改为 ConsumerStatefulWidget 以支持 Riverpod
+class AttendanceActionTab extends ConsumerStatefulWidget {
   const AttendanceActionTab({super.key});
   @override
-  State<AttendanceActionTab> createState() => _AttendanceActionTabState();
+  ConsumerState<AttendanceActionTab> createState() => _AttendanceActionTabState();
 }
 
-class _AttendanceActionTabState extends State<AttendanceActionTab> {
+class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   bool _isLoading = false;
-  bool _isProcessingAction = false; // 🟢 Anti-spam lock
+  bool _isProcessingAction = false; 
   String _staffName = "Staff";
   String _employeeId = "";
   
@@ -537,10 +540,9 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     return action;
   }
 
-  // 1. Initial Trigger with Anti-spam Lock
   Future<void> _submitAttendance() async {
     if (_capturedPhoto == null) return;
-    if (_isProcessingAction) return; // 🟢 Anti-spam lock
+    if (_isProcessingAction) return; 
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -567,7 +569,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       duration: const Duration(seconds: 2),
     ));
 
-    // Wait for the background process to finish before unlocking UI
     await _processUploadWithRetry(
       uid: uid,
       email: email,
@@ -584,7 +585,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     }
   }
 
-  // 2. Background Process with Retry Logic
   Future<void> _processUploadWithRetry({
     required String uid,
     required String email,
@@ -601,14 +601,14 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       String addressStr = await _fetchAddressString(position);
 
       String fileName = '${timestamp.millisecondsSinceEpoch}.jpg';
-      Reference ref = FirebaseStorage.instance
+      Reference storageRef = FirebaseStorage.instance
           .ref()
           .child('attendance_photos')
           .child(uid)
           .child(fileName);
       
-      await ref.putFile(File(file.path));
-      String photoUrl = await ref.getDownloadURL();
+      await storageRef.putFile(File(file.path));
+      String photoUrl = await storageRef.getDownloadURL();
 
       final todayStr = DateFormat('yyyy-MM-dd').format(timestamp);
       final timeStr = DateFormat('HH:mm:ss').format(timestamp);
@@ -642,14 +642,15 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
 
       await FirebaseFirestore.instance.collection('attendance').add(newRecord);
 
+      // 🟢 2. 使用 ref.read 访问 Riverpod 状态来触发追踪的开启或停止
       if (action == 'Clock In') {
-        TrackingService().startTracking(uid);
+        ref.read(trackingProvider.notifier).startTracking(uid);
       } else if (action == 'Break Out') {
-        TrackingService().stopTracking();
+        ref.read(trackingProvider.notifier).stopTracking();
       } else if (action == 'Break In') {
-        TrackingService().startTracking(uid);
+        ref.read(trackingProvider.notifier).startTracking(uid);
       } else if (action == 'Clock Out') {
-        TrackingService().stopTracking();
+        ref.read(trackingProvider.notifier).stopTracking();
       }
 
       if (mounted) {
@@ -945,7 +946,7 @@ class _HistoryTabState extends State<HistoryTab> {
                 .snapshots(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator());
+                return const ShimmerLoadingList();
               }
               
               final allDocs = snapshot.data?.docs ?? [];
@@ -1135,7 +1136,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                 .orderBy('date')
                 .snapshots(),
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+              if (snapshot.connectionState == ConnectionState.waiting) return const ShimmerLoadingList();
               final scheduleDocs = snapshot.data?.docs ?? [];
               if (scheduleDocs.isEmpty) return Center(child: Text("att.no_shifts".tr(), style: const TextStyle(color: Colors.grey)));
               
@@ -1440,7 +1441,7 @@ class _SubmitTabState extends State<SubmitTab> {
                 .orderBy('date')
                 .snapshots(),
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+              if (snapshot.connectionState == ConnectionState.waiting) return const ShimmerLoadingList();
               final scheduleDocs = snapshot.data?.docs ?? [];
               if (scheduleDocs.isEmpty) return Center(child: Text("att.no_shifts".tr(), style: const TextStyle(color: Colors.grey)));
               
