@@ -124,7 +124,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 }
 
 // ==========================================
-//  Tab 1: Action Tab (Optimized)
+//  Tab 1: Action Tab (Optimized with Anti-Spam)
 // ==========================================
 
 class AttendanceActionTab extends StatefulWidget {
@@ -135,6 +135,7 @@ class AttendanceActionTab extends StatefulWidget {
 
 class _AttendanceActionTabState extends State<AttendanceActionTab> {
   bool _isLoading = false;
+  bool _isProcessingAction = false; // 🟢 Anti-spam lock
   String _staffName = "Staff";
   String _employeeId = "";
   
@@ -276,7 +277,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
             const LocationSettings(accuracy: LocationAccuracy.high));
   }
 
-  /// Validation: Checks Office Location and WiFi constraints
   Future<bool> _validateRestrictions() async {
     setState(() => _isLoading = true);
     
@@ -377,15 +377,16 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     final now = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
+    // We only look at active/verified records to determine the next logical action
     final q = await FirebaseFirestore.instance
         .collection('attendance')
         .where('uid', isEqualTo: user.uid)
         .where('date', isEqualTo: todayStr)
+        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected']) // Ignore Archived
         .get();
 
     bool hasAnyRecord = q.docs.isNotEmpty; 
     
-    bool isLastVerified = false;
     String? lastSession;
     bool hasClockedOut = false;
 
@@ -395,9 +396,8 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       final last = docs.last;
       
       lastSession = last['session'];
-      isLastVerified = last['verificationStatus'] == 'Verified';
       
-      hasClockedOut = docs.any((doc) => doc['session'] == 'Clock Out' && doc['verificationStatus'] == 'Verified');
+      hasClockedOut = docs.any((doc) => doc['session'] == 'Clock Out');
     }
 
     if (!mounted) return;
@@ -434,10 +434,10 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
                 title: "att.act_break_out".tr(),
                 subtitle: hasClockedOut 
                     ? "Shift Ended" 
-                    : ((lastSession == 'Break Out' && isLastVerified) ? "att.sub_locked_verified".tr() : "att.sub_lunch".tr()),
+                    : ((lastSession == 'Break Out') ? "att.sub_locked_verified".tr() : "att.sub_lunch".tr()),
                 icon: Icons.coffee,
                 color: Colors.orange,
-                isLocked: !hasAnyRecord || (lastSession == 'Break Out' && isLastVerified) || hasClockedOut,
+                isLocked: !hasAnyRecord || (lastSession == 'Break Out') || hasClockedOut,
                 onTap: () => _handleAction("Break Out"),
               ),
 
@@ -445,10 +445,10 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
                 title: "att.act_break_in".tr(),
                 subtitle: hasClockedOut 
                     ? "Shift Ended" 
-                    : ((lastSession == 'Break In' && isLastVerified) ? "att.sub_locked_verified".tr() : "att.sub_back_work".tr()),
+                    : ((lastSession == 'Break In') ? "att.sub_locked_verified".tr() : "att.sub_back_work".tr()),
                 icon: Icons.work_history,
                 color: Colors.blue,
-                isLocked: !hasAnyRecord || (lastSession == 'Break In' && isLastVerified) || hasClockedOut,
+                isLocked: !hasAnyRecord || (lastSession == 'Break In') || hasClockedOut || (lastSession != 'Break Out'),
                 onTap: () => _handleAction("Break In"),
               ),
 
@@ -456,10 +456,10 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
 
               _buildActionTile(
                 title: "att.act_clock_out".tr(),
-                subtitle: (lastSession == 'Clock Out' && isLastVerified) ? "att.sub_locked_verified".tr() : "att.sub_end_shift".tr(),
+                subtitle: hasClockedOut ? "att.sub_locked_verified".tr() : "att.sub_end_shift".tr(),
                 icon: Icons.logout,
                 color: Colors.red,
-                isLocked: !hasAnyRecord || (lastSession == 'Clock Out' && isLastVerified),
+                isLocked: !hasAnyRecord || hasClockedOut,
                 onTap: () => _handleAction("Clock Out"),
               ),
             ],
@@ -537,37 +537,38 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     return action;
   }
 
-  // 🟢🟢🟢 NEW OPTIMIZED SUBMISSION LOGIC 🟢🟢🟢
-
-  // 1. Initial Trigger: Updates UI immediately, then runs background task
+  // 1. Initial Trigger with Anti-spam Lock
   Future<void> _submitAttendance() async {
     if (_capturedPhoto == null) return;
+    if (_isProcessingAction) return; // 🟢 Anti-spam lock
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    // Capture state immediately (Snapshoting data)
+    setState(() {
+      _isProcessingAction = true; 
+    });
+
     final XFile photoFile = _capturedPhoto!;
     final String action = _selectedAction;
-    final DateTime actionTime = DateTime.now(); // 🔒 Lock the time here
+    final DateTime actionTime = DateTime.now(); 
     final String uid = user.uid;
     final String email = user.email ?? "";
     final String name = _staffName;
 
-    // Optimistic UI Update: Clear photo & show "Queued" message
     setState(() {
       _capturedPhoto = null;
       _isLoading = false;
     });
 
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("att.msg_queueing".tr(args: [_getActionDisplayText(action)])), // "Submitting in background..."
+      content: Text("att.msg_queueing".tr(args: [_getActionDisplayText(action)])),
       backgroundColor: Colors.blue,
       duration: const Duration(seconds: 2),
     ));
 
-    // Fire and forget (don't await)
-    _processUploadWithRetry(
+    // Wait for the background process to finish before unlocking UI
+    await _processUploadWithRetry(
       uid: uid,
       email: email,
       name: name,
@@ -575,6 +576,12 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       action: action,
       timestamp: actionTime,
     );
+    
+    if (mounted) {
+      setState(() {
+        _isProcessingAction = false;
+      });
+    }
   }
 
   // 2. Background Process with Retry Logic
@@ -588,14 +595,11 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     int attempt = 1,
   }) async {
     try {
-      // Step A: Get High Accuracy Location (Can take 2-5s)
       Position? position = await _determinePosition();
       if (position == null) throw "GPS Signal Lost";
 
-      // Step B: Get Address String (Helper function needed to avoid UI setState)
       String addressStr = await _fetchAddressString(position);
 
-      // Step C: Upload Photo
       String fileName = '${timestamp.millisecondsSinceEpoch}.jpg';
       Reference ref = FirebaseStorage.instance
           .ref()
@@ -606,7 +610,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       await ref.putFile(File(file.path));
       String photoUrl = await ref.getDownloadURL();
 
-      // Step D: Save to Firestore
       final todayStr = DateFormat('yyyy-MM-dd').format(timestamp);
       final timeStr = DateFormat('HH:mm:ss').format(timestamp);
       
@@ -620,7 +623,7 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
         'location': GeoPoint(position.latitude, position.longitude),
         'address': addressStr,
         'photoUrl': photoUrl, 
-        'timestamp': Timestamp.fromDate(timestamp), // Use locked time
+        'timestamp': Timestamp.fromDate(timestamp), 
         'manualIn': null,
         'manualOut': null,
       };
@@ -639,7 +642,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
 
       await FirebaseFirestore.instance.collection('attendance').add(newRecord);
 
-      // Step E: Trigger Tracking Service
       if (action == 'Clock In') {
         TrackingService().startTracking(uid);
       } else if (action == 'Break Out') {
@@ -650,10 +652,9 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
         TrackingService().stopTracking();
       }
 
-      // Final Success Notification
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("att.msg_success".tr()), // "Submission Successful"
+            content: Text("att.msg_success".tr()), 
             backgroundColor: Colors.green));
       }
 
@@ -661,10 +662,9 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
       debugPrint("Upload failed (Attempt $attempt): $e");
       
       if (attempt < 3) {
-        // Retry logic: Wait 3s, 6s, then fail
         int delay = attempt * 3;
         await Future.delayed(Duration(seconds: delay));
-        _processUploadWithRetry(
+        await _processUploadWithRetry(
           uid: uid, email: email, name: name, 
           file: file, action: action, timestamp: timestamp, 
           attempt: attempt + 1
@@ -682,7 +682,6 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
     }
   }
 
-  // Helper to fetch address string without updating UI state
   Future<String> _fetchAddressString(Position position) async {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
@@ -792,29 +791,32 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
                 const SizedBox(height: 40),
 
                 GestureDetector(
-                  onTap: _showActionPicker,
+                  onTap: _isProcessingAction ? null : _showActionPicker,
                   child: Container(
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: Colors.amber,
+                      color: _isProcessingAction ? Colors.grey : Colors.amber,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
-                        BoxShadow(color: Colors.amber.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5))
+                        if (!_isProcessingAction)
+                          BoxShadow(color: Colors.amber.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5))
                       ],
                       image: _capturedPhoto != null
                           ? DecorationImage(image: FileImage(File(_capturedPhoto!.path)), fit: BoxFit.cover)
                           : null,
                     ),
                     child: _capturedPhoto == null
-                        ? const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 40)
+                        ? (_isProcessingAction 
+                            ? const Padding(padding: EdgeInsets.all(20.0), child: CircularProgressIndicator(color: Colors.white))
+                            : const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 40))
                         : null,
                   ),
                 ),
 
                 const SizedBox(height: 20),
                 
-                if (_capturedPhoto == null)
+                if (_capturedPhoto == null && !_isProcessingAction)
                   Text("att.hint_tap_camera".tr(), style: const TextStyle(color: Colors.white70, fontSize: 12)),
 
                 const SizedBox(height: 20),
@@ -825,11 +827,11 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      backgroundColor: _capturedPhoto != null ? whiteTextColor : Colors.grey.shade300,
-                      foregroundColor: _capturedPhoto != null ? naviColor : Colors.grey.shade500,
-                      elevation: _capturedPhoto != null ? 3 : 0,
+                      backgroundColor: (_capturedPhoto != null && !_isProcessingAction) ? whiteTextColor : Colors.grey.shade300,
+                      foregroundColor: (_capturedPhoto != null && !_isProcessingAction) ? naviColor : Colors.grey.shade500,
+                      elevation: (_capturedPhoto != null && !_isProcessingAction) ? 3 : 0,
                     ),
-                    onPressed: () {
+                    onPressed: _isProcessingAction ? null : () {
                       if (_capturedPhoto == null) {
                         showDialog(
                           context: context,
@@ -855,9 +857,11 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
                       }
                     },
                     child: Text(
-                      _capturedPhoto != null 
-                        ? "att.btn_confirm".tr(args: [actionDisplay])
-                        : "att.btn_clock_attendance".tr(),
+                      _isProcessingAction 
+                        ? "Processing..."
+                        : (_capturedPhoto != null 
+                          ? "att.btn_confirm".tr(args: [actionDisplay])
+                          : "att.btn_clock_attendance".tr()),
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)
                     ),
                   ),
@@ -872,7 +876,7 @@ class _AttendanceActionTabState extends State<AttendanceActionTab> {
 }
 
 // ==========================================
-//  Tab 2: History (Staff Uploads Only)
+//  Tab 2: History (Staff Uploads Only, Supports Archived)
 // ==========================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
@@ -946,13 +950,15 @@ class _HistoryTabState extends State<HistoryTab> {
               
               final allDocs = snapshot.data?.docs ?? [];
               
-              // 🟢 核心过滤：只保留员工自己上传的记录
-              // 过滤掉所有由 Admin 创建的 "Admin Manual Edit" 或 "Admin Manual Entry"
+              // 🟢 Core Filter: Keep original self-clocked records, even if archived
               final docs = allDocs.where((d) {
                 final data = d.data() as Map<String, dynamic>;
                 final address = data['address']?.toString() ?? '';
-                // 如果地址包含 "Admin Manual"，说明是后台操作的，隐藏掉
-                return !address.contains("Admin Manual");
+                
+                // Exclude any records manually generated by Admin backend
+                if (address.contains("Admin Manual") || address.contains("Admin Override")) return false;
+                
+                return true;
               }).toList();
 
               if (docs.isEmpty) {
@@ -967,13 +973,13 @@ class _HistoryTabState extends State<HistoryTab> {
                   final data = docs[index].data() as Map<String, dynamic>;
                   final ts = (data['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
                   
-                  // 获取状态，但不做特殊视觉处理，仅仅用于显示图标
                   String status = data['verificationStatus'] ?? 'Pending';
-                  
+                  bool isArchived = status == 'Archived';
+
                   return Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.white, // 统一白色背景
+                      color: isArchived ? Colors.grey.shade50 : Colors.white, 
                       border: Border.all(color: Colors.grey.shade300),
                       borderRadius: BorderRadius.circular(8),
                     ),
@@ -987,16 +993,17 @@ class _HistoryTabState extends State<HistoryTab> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(DateFormat('dd-MM-yyyy').format(ts),
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                       fontWeight: FontWeight.bold, 
                                       fontSize: 13, 
-                                      color: Colors.black54, // 统一颜色
+                                      color: isArchived ? Colors.grey : Colors.black54, 
                                   )),
                               Text(DateFormat('HH:mm:ss').format(ts), 
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 14,
-                                      color: Colors.black87, // 统一颜色
+                                      color: isArchived ? Colors.grey : Colors.black87, 
+                                      decoration: isArchived ? TextDecoration.lineThrough : null,
                                   )), 
                             ],
                           ),
@@ -1007,9 +1014,9 @@ class _HistoryTabState extends State<HistoryTab> {
                           flex: 4,
                           child: Text(
                             data['address'] ?? "Unknown",
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12, 
-                              color: Color(0xFF15438c),
+                              color: isArchived ? Colors.grey : const Color(0xFF15438c),
                             ),
                             maxLines: 5,
                             overflow: TextOverflow.ellipsis,
@@ -1036,22 +1043,21 @@ class _HistoryTabState extends State<HistoryTab> {
     );
   }
 
-  // 🟢 简化的状态图标：只显示 Pending 或 Verified 两种状态的感觉
-  // 即使后台状态是 Archived，在这里也当作 "已记录" 显示，不让员工产生困惑
   Widget _buildStatusIcon(String status) {
     if (status == 'Verified' || status == 'Corrected' || status == 'Approved') {
       return const Icon(Icons.check_circle, color: Colors.green, size: 20);
     } else if (status == 'Rejected') {
       return const Icon(Icons.cancel, color: Colors.red, size: 20);
+    } else if (status == 'Archived') {
+      return const Icon(Icons.history, color: Colors.grey, size: 20); 
     } else {
-      // 包括 Pending 和 Archived (因为是员工视角的原始记录)
-      // 统一显示为一个代表 "已记录/待定" 的图标
       return const Icon(Icons.task_alt, color: Colors.black54, size: 20); 
     }
   }
 }
+
 // ==========================================
-//  Tab 3: Schedule Tab (MODIFIED)
+//  Tab 3: Schedule Tab 
 // ==========================================
 
 class ScheduleTab extends StatefulWidget {
@@ -1158,27 +1164,25 @@ class _ScheduleTabState extends State<ScheduleTab> {
                       String underStr = "0h 0m";
                       String otStr = "0h 0m";
                       
-                      // 🟢 ABSENT LOGIC
                       bool isAbsent = false;
                       final now = DateTime.now();
                       final scheduleDate = DateTime.parse(dateStr);
-                      // Compare dates only (ignore time)
                       final today = DateTime(now.year, now.month, now.day);
                       final checkDate = DateTime(scheduleDate.year, scheduleDate.month, scheduleDate.day);
                       
                       if (checkDate.isBefore(today)) {
-                         isAbsent = true; // Assume absent if past date
+                         isAbsent = true; 
                       }
 
                       if (attSnapshot.hasData && attSnapshot.data!.docs.isNotEmpty) {
                         final docs = attSnapshot.data!.docs;
                         final verifiedDocs = docs.where((d) {
                           final data = d.data() as Map<String, dynamic>;
-                          return data['verificationStatus'] == 'Verified';
+                          return data['verificationStatus'] == 'Verified' || data['verificationStatus'] == 'Corrected';
                         }).toList();
                         
                         if (verifiedDocs.isNotEmpty) {
-                            isAbsent = false; // Not absent if records found
+                            isAbsent = false; 
                         }
 
                         QueryDocumentSnapshot? clockInDoc;
@@ -1297,7 +1301,6 @@ class _ScheduleTabState extends State<ScheduleTab> {
                 )
               ],
             ),
-            // 🟢 ABSENT LABEL ADDITION
             if (isAbsent)
                Container(
                  margin: const EdgeInsets.only(top: 10),
@@ -1345,7 +1348,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
 }
 
 // ==========================================
-//  Tab 4: Submit Tab (Modified Logic)
+//  Tab 4: Submit Tab
 // ==========================================
 
 class SubmitTab extends StatefulWidget {
@@ -1397,7 +1400,6 @@ class _SubmitTabState extends State<SubmitTab> {
     final user = FirebaseAuth.instance.currentUser;
     final now = DateTime.now();
     
-    // Limit end date to today
     final originalEndDate = _currentStartDate.add(const Duration(days: 6));
     final endOfToday = DateTime(now.year, now.month, now.day, 23, 59, 59);
     DateTime effectiveEndDate = originalEndDate.isAfter(endOfToday) ? endOfToday : originalEndDate;
@@ -1467,11 +1469,9 @@ class _SubmitTabState extends State<SubmitTab> {
                       String underStr = "0h 0m";
                       String otStr = "0h 0m";
                       
-                      // 🟢 ABSENT LOGIC FOR SUBMIT TAB
                       bool isAbsent = false;
                       final now = DateTime.now();
                       final scheduleDate = DateTime.parse(dateStr);
-                      // Compare dates only (ignore time)
                       final today = DateTime(now.year, now.month, now.day);
                       final checkDate = DateTime(scheduleDate.year, scheduleDate.month, scheduleDate.day);
                       
@@ -1485,7 +1485,7 @@ class _SubmitTabState extends State<SubmitTab> {
                         
                         final verifiedDocs = docs.where((d) {
                           final data = d.data() as Map<String, dynamic>;
-                          return data['verificationStatus'] == 'Verified';
+                          return data['verificationStatus'] == 'Verified' || data['verificationStatus'] == 'Corrected';
                         }).toList();
                         
                         if (verifiedDocs.isNotEmpty) {
@@ -1606,7 +1606,6 @@ class _SubmitTabState extends State<SubmitTab> {
                   )
                 ],
               ),
-              // 🟢 ABSENT LABEL ADDITION FOR SUBMIT TAB
               if (isAbsent)
                Container(
                  margin: const EdgeInsets.only(top: 10),

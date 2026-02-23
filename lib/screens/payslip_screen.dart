@@ -165,19 +165,50 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 );
               }
 
-              final docs = snapshot.data!.docs;
-              docs.sort((a, b) {
-                final mA = (a.data() as Map<String, dynamic>)['month'] ?? '';
-                final mB = (b.data() as Map<String, dynamic>)['month'] ?? '';
+              final rawDocs = snapshot.data!.docs;
+              
+              // 🟢 核心防护：基于月份去重，只保留同一月份最新的记录（以防 Web 端迁移旧数据时的残留）
+              final Map<String, Map<String, dynamic>> uniquePayslips = {};
+              
+              for (var doc in rawDocs) {
+                final data = doc.data() as Map<String, dynamic>;
+                final month = data['month']?.toString() ?? 'Unknown';
+                
+                if (!uniquePayslips.containsKey(month)) {
+                  uniquePayslips[month] = data;
+                } else {
+                  // 如果有重复的月份，比较 createdAt 时间，保留最新的
+                  final currentTs = uniquePayslips[month]!['createdAt'] as Timestamp?;
+                  final newTs = data['createdAt'] as Timestamp?;
+                  
+                  if (currentTs != null && newTs != null && newTs.compareTo(currentTs) > 0) {
+                     uniquePayslips[month] = data;
+                  }
+                }
+              }
+
+              final docsList = uniquePayslips.values.toList();
+
+              // 按照月份倒序排列 (最新月份在上)
+              docsList.sort((a, b) {
+                final mA = a['month'] ?? '';
+                final mB = b['month'] ?? '';
                 return mB.compareTo(mA);
               });
+
+              if (docsList.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 20),
+                  child: Center(child: Text("No payslips found.", style: TextStyle(color: Colors.grey))),
+                );
+              }
 
               return ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: docs.length,
+                itemCount: docsList.length,
                 itemBuilder: (context, index) {
-                  return _buildPayslipCard(docs[index].data() as Map<String, dynamic>);
+                  return _buildPayslipCard(docsList[index]);
                 },
               );
             },

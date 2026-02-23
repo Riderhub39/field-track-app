@@ -6,7 +6,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // 📦 Required for caching
+import 'package:shared_preferences/shared_preferences.dart'; 
 import '../widgets/custom_profile_camera.dart';
 import 'camera_screen.dart';
 import 'attendance_screen.dart';
@@ -14,10 +14,11 @@ import 'settings_screen.dart';
 import 'profile_screen.dart';
 import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
+import 'login_screen.dart'; // 🟢 引入 LoginScreen 以便强制退出时跳转
 
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
-import '../services/biometric_service.dart'; // 📦 Required for biometric check
+import '../services/biometric_service.dart'; 
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -30,23 +31,22 @@ class _HomeScreenState extends State<HomeScreen> {
   String _staffName = "Staff";
   String? _faceIdPhotoPath;
 
-  // 🟢 专门用于管理公告的弹窗监听
   StreamSubscription? _announcementSubscription;
+  StreamSubscription? _userStatusSubscription; // 🟢 账号状态监听器
 
   @override
   void initState() {
     super.initState();
-    // 1. Load User Data
-    _loadUserData();
+    // 1. 🟢 启动实时用户状态监听 (替代了原来的单次加载 _loadUserData)
+    _listenToUserStatus();
 
     // 2. Start Notification Listeners
-    // 🟢 激活全局通知服务 (后台状态栏通知)
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       NotificationService().startListeningToUserUpdates(user.uid);
     }
     
-    // 3. 🟢 启动 App 内公告弹窗监听 (前台强提醒)
+    // 3. 启动 App 内公告弹窗监听
     _listenForAnnouncements(); 
 
     // 4. Check Biometric
@@ -60,12 +60,117 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
-    // 记得销毁监听器
     _announcementSubscription?.cancel();
+    _userStatusSubscription?.cancel(); // 🟢 销毁页面时取消监听
     super.dispose();
   }
 
-  // 🟢 核心功能：监听最新公告并弹出对话框
+  // 🟢 核心安全机制：实时监听用户状态，发现禁用立即踢出
+  void _listenToUserStatus() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    _userStatusSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .where('authUid', isEqualTo: user.uid)
+        .limit(1)
+        .snapshots()
+        .listen((snapshot) async {
+      
+      if (snapshot.docs.isNotEmpty) {
+        final data = snapshot.docs.first.data();
+
+        // 🛡️ 安全拦截：检查账号是否被管理员禁用或邮箱/手机被重置导致失活
+        final status = data['status'] ?? 'active';
+        if (status == 'disabled' || status == 'inactive') {
+          _forceLogout(status);
+          return;
+        }
+
+        // 如果状态正常，更新 UI
+        if (mounted) {
+          setState(() {
+            final personal = data['personal'] as Map<String, dynamic>?;
+            if (personal != null) {
+              if (personal['shortName'] != null && personal['shortName'].toString().isNotEmpty) {
+                _staffName = personal['shortName'];
+              } else if (personal['name'] != null) {
+                _staffName = personal['name'];
+              }
+              _cacheUserName(_staffName);
+            }
+
+            if (data['faceIdPhoto'] != null) {
+              _faceIdPhotoPath = data['faceIdPhoto'];
+            }
+          });
+        }
+      } else {
+        // 🛡️ 如果 Firestore 中找不到该员工档案 (可能被彻底删除)，同样踢出
+        _forceLogout('not_found');
+      }
+    }, onError: (error) {
+      debugPrint("Error listening to user status: $error");
+    });
+  }
+
+  // 🟢 强制登出并清空所有缓存
+  Future<void> _forceLogout(String reason) async {
+    _userStatusSubscription?.cancel(); // 停止监听防止重复弹窗
+    
+    // 停止后台 GPS
+    try {
+      TrackingService().stopTracking(); 
+    } catch (e) {
+      debugPrint("Error stopping tracking on force logout: $e");
+    }
+    
+    // 清除本地缓存 (包括生物识别标记)
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+
+    // 退出 Firebase Auth
+    await FirebaseAuth.instance.signOut();
+
+    if (!mounted) return;
+
+    // 弹出无法手动关闭的警告框，并跳转回登录页
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: const Row(
+          children: [
+            Icon(Icons.security, color: Colors.red),
+            SizedBox(width: 10),
+            Text("Access Denied", style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          reason == 'disabled' 
+            ? "Your account has been disabled by the administrator."
+            : "Your account credentials have been reset or removed. Please contact HR or log in again.",
+          style: const TextStyle(fontSize: 15),
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              // 清空路由栈，跳转到登录界面
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (context) => const LoginScreen()),
+                (route) => false,
+              );
+            },
+            child: const Text("OK", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _listenForAnnouncements() {
     _announcementSubscription = FirebaseFirestore.instance
         .collection('announcements')
@@ -82,13 +187,10 @@ class _HomeScreenState extends State<HomeScreen> {
       if (createdAt == null || message.isEmpty) return;
 
       final prefs = await SharedPreferences.getInstance();
-      // 获取上次已读公告的时间戳
       final lastShownTime = prefs.getInt('last_announcement_time') ?? 0;
       
-      // 只有当公告的时间晚于上次已读时间时，才弹窗
       if (createdAt.millisecondsSinceEpoch > lastShownTime) {
         
-        // 立即更新本地记录，防止下次打开重复弹窗
         await prefs.setInt('last_announcement_time', createdAt.millisecondsSinceEpoch);
         
         if (mounted) {
@@ -100,7 +202,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 children: [
                   const Icon(Icons.campaign, color: Colors.orange),
                   const SizedBox(width: 10),
-                  Text('announcement.title'.tr()), // 确保你的语言包有这个key，或者写死 "Announcement"
+                  Text('announcement.title'.tr()), 
                 ],
               ),
               content: SingleChildScrollView(
@@ -122,7 +224,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // 🟢 Core Logic: Ask to enable biometrics on first login
   Future<void> _checkBiometricSetup() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -177,43 +278,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       TrackingService().resumeTrackingSession(user.uid);
-    }
-  }
-
-  void _loadUserData() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      final querySnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .where('authUid', isEqualTo: user.uid)
-          .limit(1)
-          .get();
-
-      if (querySnapshot.docs.isNotEmpty) {
-        final data = querySnapshot.docs.first.data();
-
-        if (mounted) {
-          setState(() {
-            final personal = data['personal'] as Map<String, dynamic>?;
-            if (personal != null) {
-              if (personal['shortName'] != null && personal['shortName'].toString().isNotEmpty) {
-                _staffName = personal['shortName'];
-              } else if (personal['name'] != null) {
-                _staffName = personal['name'];
-              }
-              _cacheUserName(_staffName);
-            }
-
-            if (data['faceIdPhoto'] != null) {
-              _faceIdPhotoPath = data['faceIdPhoto'];
-            }
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint("Error fetching user data: $e");
     }
   }
 
@@ -354,7 +418,6 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             child: Row(
               children: [
-
                 const SizedBox(width: 15),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
