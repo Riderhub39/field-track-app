@@ -18,6 +18,7 @@ import '../widgets/shimmer_loading.dart';
 import '../widgets/face_camera_view.dart';
 import 'correction_request_screen.dart';
 import '../services/tracking_service.dart'; 
+import '../services/notification_service.dart'; // 🟢 引入以进行 Token 绑定
 
 class AttendanceScreen extends StatefulWidget {
   const AttendanceScreen({super.key});
@@ -33,6 +34,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void initState() {
     super.initState();
     _loadUserProfile();
+    _autoBindFCM(); // 🟢 自动绑定推送 Token
+  }
+
+  Future<void> _autoBindFCM() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      await NotificationService().bindFCMToken(user.uid);
+    }
   }
 
   Future<void> _loadUserProfile() async {
@@ -136,7 +145,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   String _staffName = "Staff";
   String _employeeId = "";
   
-  String _currentAddress = "att.locating".tr();
+  String _currentAddress = "att.locating".tr(); // 🟢 已多语言化
   Timer? _timer;
   
   String? _referenceFaceIdPath; 
@@ -147,17 +156,58 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   CameraPosition? _initialPosition;
   Set<Marker> _markers = {};
 
+  // 🟢 今日打卡预览状态
+  String _todayInTime = "--:--";
+  String _todayOutTime = "--:--";
+  StreamSubscription? _attendanceSubscription;
+
   @override
   void initState() {
     super.initState();
     _fetchUserDataAndFaceId(); 
     _initLocation();
+    _listenToTodayAttendance(); // 🟢 开始实时监听
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _attendanceSubscription?.cancel();
     super.dispose();
+  }
+
+  // 🟢 实时更新今日打卡时间
+  void _listenToTodayAttendance() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+    _attendanceSubscription = FirebaseFirestore.instance
+        .collection('attendance')
+        .where('uid', isEqualTo: user.uid)
+        .where('date', isEqualTo: todayStr)
+        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
+        .snapshots()
+        .listen((snapshot) {
+      if (mounted) {
+        String inT = "--:--";
+        String outT = "--:--";
+        final docs = snapshot.docs;
+        docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
+
+        for (var doc in docs) {
+          final data = doc.data();
+          final ts = (data['timestamp'] as Timestamp).toDate();
+          final formatted = DateFormat('HH:mm').format(ts);
+          if (data['session'] == 'Clock In') inT = formatted;
+          if (data['session'] == 'Clock Out') outT = formatted;
+        }
+        setState(() {
+          _todayInTime = inT;
+          _todayOutTime = outT;
+        });
+      }
+    });
   }
 
   Future<void> _fetchUserDataAndFaceId() async {
@@ -370,7 +420,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     if (user == null) return;
 
     final now = DateTime.now();
-    // 🟢 Locale aware formatting not needed here as it's internal logic
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
     final q = await FirebaseFirestore.instance
@@ -693,7 +742,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
 
     final now = DateTime.now();
-    // 🟢 Apply locale to DateFormat for proper translation of EEE (Mon, Tue, Wed...)
+    // 🟢 应用 Locale 到日期格式化
     final displayDate = DateFormat('dd/MM/yyyy (EEE)', context.locale.languageCode).format(now);
     const whiteTextColor = Color(0xFFFFFFFF);
     const naviColor = Color(0xFF15438c);
@@ -778,8 +827,19 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                 Text(_employeeId, style: const TextStyle(fontSize: 16, color: Colors.white)),
 
                 const SizedBox(height: 20),
-                const Divider(color: Colors.white),
-                const SizedBox(height: 40),
+                const Divider(color: Colors.white54),
+                const SizedBox(height: 15),
+
+                // 🟢 今日打卡预览 (Time Boxes)
+                Row(
+                  children: [
+                    Expanded(child: _buildActionTimeBox("att.label_in".tr(), _todayInTime)),
+                    const SizedBox(width: 12),
+                    Expanded(child: _buildActionTimeBox("att.label_out".tr(), _todayOutTime)),
+                  ],
+                ),
+
+                const SizedBox(height: 30),
 
                 GestureDetector(
                   onTap: _isProcessingAction ? null : _showActionPicker,
@@ -862,6 +922,32 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
           ),
         ],
       ),
+    );
+  }
+
+  // 辅助方法：构建今日打卡专用的 Time Box
+  Widget _buildActionTimeBox(String label, String time) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.white70)),
+        const SizedBox(height: 4),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Center(
+            child: Text(
+              time, 
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 18)
+            ),
+          ),
+        )
+      ],
     );
   }
 }
@@ -958,7 +1044,7 @@ class _HistoryTabState extends State<HistoryTab> {
                   final data = docs[index].data() as Map<String, dynamic>;
                   final ts = (data['timestamp'] as Timestamp).toDate();
                   
-                  // 🟢 Removed manualIn checks, directly format timestamp with Locale
+                  // 🟢 使用 Locale 格式化历史记录日期和时间
                   String displayTime = DateFormat('HH:mm:ss', context.locale.languageCode).format(ts);
                   String displayDate = DateFormat('dd-MM-yyyy', context.locale.languageCode).format(ts);
 
@@ -1082,7 +1168,6 @@ class _ScheduleTabState extends State<ScheduleTab> {
     int minutes = d.inMinutes;
     int h = minutes ~/ 60;
     int m = minutes % 60;
-    // 🟢 Translate hours and minutes formatting
     return "${h}h ${m}m";
   }
 
@@ -1096,7 +1181,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(endDate);
     
-    // 🟢 Locale aware DateFormat for headers
+    // 🟢 应用 Locale 到日期范围选择器
     final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(endDate)}";
 
     return Column(
@@ -1181,7 +1266,6 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         QueryDocumentSnapshot? breakOutDoc;
                         try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (e) { breakOutDoc = null; }
 
-                        // 🟢 Only rely on precise Timestamp
                         if (clockInDoc != null) {
                            final data = clockInDoc.data() as Map<String, dynamic>;
                            final ts = (data['timestamp'] as Timestamp).toDate();
@@ -1232,11 +1316,10 @@ class _ScheduleTabState extends State<ScheduleTab> {
     );
   }
   
-  // 🟢 Pass context to ensure context.locale can be used
   Widget _buildScheduleCard(Map<String, dynamic> scheduleData, String inTime, String outTime, String status, Color color, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
     
-    // 🟢 Locale aware formatting for weekday
+    // 🟢 应用 Locale 格式化星期和日期
     final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
     final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
     
@@ -1405,7 +1488,7 @@ class _SubmitTabState extends State<SubmitTab> {
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(effectiveEndDate);
     
-    // 🟢 Locale aware DateFormat for headers
+    // 🟢 修正 Tab 日期显示为 Locale aware
     final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(originalEndDate)}";
     bool isFutureWeek = _currentStartDate.isAfter(endOfToday);
 
@@ -1544,11 +1627,10 @@ class _SubmitTabState extends State<SubmitTab> {
     );
   }
 
-  // 🟢 Pass context here too
   Widget _buildSubmitCard(Map<String, dynamic> scheduleData, String? attendanceId, String inTime, String outTime, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
     
-    // 🟢 Locale aware formatting for weekday
+    // 🟢 Locale aware formatting
     final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
     final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
     
