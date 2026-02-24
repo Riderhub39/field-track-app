@@ -28,7 +28,13 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
   DateTime? _endDate;
   final TextEditingController _reasonController = TextEditingController();
 
-  Map<String, dynamic> _balances = {'annual': 0, 'medical': 0, 'emergency': 0};
+  // 🟢 初始为空，全靠 Firestore 提供数据
+  Map<String, dynamic> _balances = {
+    'annual': 0, 
+    'medical': 0, 
+    'total_annual': 0, 
+    'total_medical': 0 
+  };
   bool _balanceLoaded = false;
 
   PlatformFile? _selectedFile; 
@@ -81,10 +87,17 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
       if (userData != null && userData.containsKey('leave_balance')) {
         if (mounted) {
           setState(() { 
-            _balances = userData!['leave_balance']; 
+            // 🟢 直接采用从 Admin Web 端算好并存入 Firestore 的真实数据
+            _balances = {
+              ..._balances,
+              ...userData!['leave_balance']
+            }; 
             _balanceLoaded = true; 
           });
         }
+      } else {
+        // 如果新用户还没有被 Web 端 recalculate 过
+        if (mounted) setState(() => _balanceLoaded = true);
       }
     } catch (e) {
       debugPrint("Error fetching balance: $e");
@@ -165,7 +178,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     return false;
   }
 
-  // 🟢 优化后的提交函数：完美处理无附件/防崩溃
   Future<void> _submitApplication() async {
     if (!_formKey.currentState!.validate()) return;
     
@@ -180,16 +192,20 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
        return;
     }
 
-    // 1. 余额检查 (仅针对年假)
     if (_leaveTypeKey == 'leave.type_annual') {
       int annualBal = (_balances['annual'] is int) ? _balances['annual'] : 0;
       if (annualBal < days) {
         _showSnack("leave.error_insufficient".tr(args: [days.toString(), annualBal.toString()]));
         return;
       }
+    } else if (_leaveTypeKey == 'leave.type_medical') {
+      int medicalBal = (_balances['medical'] is int) ? _balances['medical'] : 0;
+      if (medicalBal < days) {
+        _showSnack("leave.error_insufficient".tr(args: [days.toString(), medicalBal.toString()]));
+        return;
+      }
     }
 
-    // 2. 证据检查 (仅针对病假)
     if (_leaveTypeKey == 'leave.type_medical' && _selectedFile == null) {
       _showSnack("leave.error_upload_evidence".tr()); 
       return;
@@ -203,7 +219,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         throw "User not authenticated";
       }
 
-      // 3. 重复请假检查
       bool isDuplicate = await _checkForDuplicateLeave(user.uid, _startDate!, _endDate!);
       if (isDuplicate) {
         _showSnack("You already have an approved leave for these dates.");
@@ -211,7 +226,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         return;
       }
 
-      // 4. 更安全的获取用户资料
       String empCode = user.uid; 
       String empName = 'Staff';
       String empEmail = user.email ?? "no-email@system.com";
@@ -228,7 +242,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         throw "User profile not found in database";
       }
 
-      // 5. 处理附件上传
       String? attachmentUrl;
       String? fileType; 
 
@@ -249,7 +262,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         fileType = ext; 
       }
 
-      // 6. 干净的数据载荷写入
       Map<String, dynamic> leaveData = {
         'uid': empCode,
         'authUid': user.uid,
@@ -265,7 +277,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         'isPayrollDeductible': (_leaveTypeKey == 'leave.type_unpaid'),
       };
 
-      // 🟢 关键修复：只有当有附件时才写入相关字段，防止无薪假引发 Null 问题
       if (attachmentUrl != null) {
         leaveData['attachmentUrl'] = attachmentUrl;
         leaveData['fileType'] = fileType;
@@ -328,22 +339,30 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              margin: const EdgeInsets.only(bottom: 20), 
-              decoration: BoxDecoration(color: Colors.blue[50], borderRadius: BorderRadius.circular(10)),
-              child: Column(
-                children: [
-                  Text("leave.balance_label".tr().toUpperCase(), style: const TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 12)),
-                  const SizedBox(height: 5),
-                  _balanceLoaded 
-                    ? Text((_balances['annual'] ?? 0).toString(), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 32, color: Colors.blue))
-                    : const LinearProgressIndicator(),
-                  Text("leave.days_remaining".tr(), style: const TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildBalanceCard(
+                    title: "leave.type_annual".tr(),
+                    available: _balances['annual'] ?? 0,
+                    // 🟢 动态读取总额，如果未计算过显示 "-"
+                    total: _balances['total_annual']?.toString() ?? "-",
+                    color: Colors.blue,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _buildBalanceCard(
+                    title: "leave.type_medical".tr(),
+                    available: _balances['medical'] ?? 0,
+                    // 🟢 动态读取总额
+                    total: _balances['total_medical']?.toString() ?? "-",
+                    color: Colors.orange,
+                  ),
+                ),
+              ],
             ),
+            const SizedBox(height: 24),
 
             DropdownButtonFormField<String>(
               initialValue: _leaveTypeKey,
@@ -471,6 +490,53 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     );
   }
 
+  Widget _buildBalanceCard({
+    required String title, 
+    required int available, 
+    required String total, // 修改类型以支持传入 "-"
+    required MaterialColor color
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      decoration: BoxDecoration(
+        color: color[50], 
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title.toUpperCase(), 
+            style: TextStyle(color: color[700], fontWeight: FontWeight.bold, fontSize: 11)
+          ),
+          const SizedBox(height: 8),
+          _balanceLoaded 
+            ? Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(
+                    available.toString(), 
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 32, color: color[800])
+                  ),
+                  Text(
+                    " / $total", 
+                    style: TextStyle(fontSize: 14, color: color[600], fontWeight: FontWeight.w500)
+                  ),
+                ],
+              )
+            : SizedBox(height: 38, child: Center(child: LinearProgressIndicator(color: color))),
+          const SizedBox(height: 4),
+          Text(
+            "leave.days_remaining".tr(), 
+            style: const TextStyle(color: Colors.grey, fontSize: 11)
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildHistoryTab() {
     final user = FirebaseAuth.instance.currentUser;
     if(user == null) {
@@ -478,7 +544,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     }
 
     return StreamBuilder<QuerySnapshot>(
-      // 🟢 修复了这里使用 email 导致旧记录缺失的问题，改为使用 authUid 搜索
       stream: FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: user.uid).snapshots(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
