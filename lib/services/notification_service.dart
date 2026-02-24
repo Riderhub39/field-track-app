@@ -23,7 +23,7 @@ class NotificationService {
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance; 
 
   static const int _trackingId = 888;
-  static const int _shiftStartId = 101;
+  // 删除了 shiftStartId 因为不再需要
 
   static const String _trackingChannelId = 'tracking_channel';
   static const String _statusChannelId = 'status_updates'; 
@@ -243,31 +243,9 @@ class NotificationService {
   // 🏢 Geofence Alert (Smart Reminders)
   // =========================================================
 
+  // 🟢 彻底移除普通进出围栏的提示
   Future<void> showGeofenceAlert(String title, String body) async {
-    if (!await _canShowNotification()) return;
-
-    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      _geofenceChannelId,
-      'Geofence Alerts',
-      channelDescription: 'Notifications for entering and exiting the office',
-      importance: Importance.max,
-      priority: Priority.high,
-      icon: '@mipmap/ic_launcher',
-      color: Color(0xFF15438c),
-      styleInformation: BigTextStyleInformation(''), 
-    );
-
-    const NotificationDetails platformDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
-    );
-
-    await _notificationsPlugin.show(
-      999, 
-      title,
-      body,
-      platformDetails,
-    );
+    // Function kept empty intentionally to prevent errors if called elsewhere
   }
 
   Future<void> showForgotClockOutAlert() async {
@@ -333,6 +311,6 @@ class NotificationService {
   }
 
   Future<void> cancelAllReminders() async {
-    await _notificationsPlugin.cancel(_shiftStartId);
+    // 🟢 清空
   }
 }

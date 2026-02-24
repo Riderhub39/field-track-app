@@ -108,7 +108,6 @@ class TrackingNotifier extends Notifier<bool> {
             .get();
 
         if (attQuery.docs.isNotEmpty) {
-          // 🟢 同样过滤掉被拒绝的记录
           final validDocs = attQuery.docs.where((doc) {
             final status = doc.data()['verificationStatus'];
             return status != 'Rejected' && status != 'Archived';
@@ -246,17 +245,9 @@ class TrackingNotifier extends Notifier<bool> {
 
       bool isInside = distanceToOffice <= _officeRadius;
 
-      if (_wasInsideOffice == false && isInside) {
-        NotificationService().showGeofenceAlert(
-          "Welcome to the Office! 🏢", 
-          "You have entered the work zone. Please remember to clock in."
-        );
-      } else if (_wasInsideOffice == true && !isInside) {
+      // 🟢 移除了所有普通的进出提醒
+      if (_wasInsideOffice == true && !isInside) {
         _checkIfForgotClockOut(); 
-        NotificationService().showGeofenceAlert(
-          "Leaving the Office? 🚗", 
-          "You are leaving the work zone. Don't forget to clock out if your shift is over."
-        );
       }
       _wasInsideOffice = isInside; 
     }
