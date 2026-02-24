@@ -24,10 +24,8 @@ class NotificationService {
 
   static const int _trackingId = 888;
   static const int _shiftStartId = 101;
-  // static const int _shiftEndId = 102; // 🟢 我们不再使用固定的下班定时提醒
 
   static const String _trackingChannelId = 'tracking_channel';
-  static const String _reminderChannelId = 'shift_reminders';
   static const String _statusChannelId = 'status_updates'; 
   static const String _geofenceChannelId = 'geofence_channel'; 
 
@@ -77,10 +75,6 @@ class NotificationService {
       );
       debugPrint('User granted permission: ${fcmSettings.authorizationStatus}');
 
-      String? token = await _firebaseMessaging.getToken();
-      if (token != null) {
-        // _saveDeviceTokenToDatabase(token); // handled during login
-      }
       
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         debugPrint('Got a message whilst in the foreground!');
@@ -269,25 +263,23 @@ class NotificationService {
     );
 
     await _notificationsPlugin.show(
-      999, // Use fixed ID to prevent spamming
+      999, 
       title,
       body,
       platformDetails,
     );
   }
 
-  // 🟢 新增方法：专供 TrackingService 调用，当离开围栏且需要打卡下班时触发
   Future<void> showForgotClockOutAlert() async {
     if (!await _canShowNotification()) return;
 
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
-      _geofenceChannelId, // 借用高优先级的频道
+      _geofenceChannelId,
       'Geofence Alerts',
       importance: Importance.max,
       priority: Priority.high,
       icon: '@mipmap/ic_launcher',
       color: Colors.red,
-      sound: RawResourceAndroidNotificationSound('notification_sound'), // 如果您有自定义声音
       enableVibration: true,
       styleInformation: BigTextStyleInformation(''), 
     );
@@ -299,7 +291,7 @@ class NotificationService {
 
     await _notificationsPlugin.show(
       998, 
-      '⚠️ ${'notif.shift_end_title'.tr()}', // 🟢 使用了插值语法替换掉加号
+      '⚠️ ${'notif.shift_end_title'.tr()}', 
       'You have left the workplace after your shift. Did you forget to Clock Out?',
       platformDetails,
     );
@@ -333,56 +325,14 @@ class NotificationService {
   }
 
   // =========================================================
-  // ⏰ Shift Reminders (Scheduled)
+  // ⏰ Shift Reminders (Scheduled) - 🟢 已清空所有定时逻辑
   // =========================================================
 
-  // 🟢 修改：现在只保留上班前的提前提醒（因为下班需要结合地理位置动态判断）
   Future<void> scheduleShiftReminders(DateTime shiftStart, DateTime shiftEnd) async {
-    if (!await _canShowNotification()) return;
-    
-    final now = DateTime.now();
-
-    // 只保留上班前 15 分钟的无脑定时提醒
-    final scheduledStart = shiftStart.subtract(const Duration(minutes: 15));
-    if (scheduledStart.isAfter(now)) {
-      await _scheduleNotification(
-        _shiftStartId,
-        'notif.shift_start_title'.tr(),
-        'notif.shift_start_body'.tr(),
-        scheduledStart,
-      );
-    }
-    
-    // 删除了 shiftEnd 的定时逻辑，改为依托 tracking_service 动态触发
-  }
-
-  Future<void> _scheduleNotification(int id, String title, String body, DateTime scheduledTime) async {
-    try {
-      await _notificationsPlugin.zonedSchedule(
-        id,
-        title,
-        body,
-        tz.TZDateTime.from(scheduledTime, tz.local),
-        const NotificationDetails(
-          android: AndroidNotificationDetails(
-            _reminderChannelId,
-            'Shift Reminders',
-            channelDescription: 'Reminders for clock-in',
-            importance: Importance.high,
-            priority: Priority.high,
-          ),
-          iOS: DarwinNotificationDetails(),
-        ),
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-      );
-    } catch (e) {
-      debugPrint("❌ Error scheduling notification: $e");
-    }
+    // 🟢 这里不再放置任何逻辑，保持为空以防外部调用报错
   }
 
   Future<void> cancelAllReminders() async {
     await _notificationsPlugin.cancel(_shiftStartId);
-    // await _notificationsPlugin.cancel(_shiftEndId); // 已移除
   }
 }
