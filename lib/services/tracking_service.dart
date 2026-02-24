@@ -16,13 +16,19 @@ class TrackingNotifier extends Notifier<bool> {
   String? _currentUserId;
   
   Position? _lastUploadedPosition;
-  static const double _uploadDistanceFilter = 200.0;
+  
+  // 🟢 修改：上传距离过滤改为 150 米
+  static const double _uploadDistanceFilter = 150.0;
   Timer? _autoStopTimer;
 
   double? _officeLat;
   double? _officeLng;
   double _officeRadius = 500.0;
   bool? _wasInsideOffice;
+
+  // 🟢 用于持久化上一次上传坐标的 Key
+  static const String _prefLastLat = 'tracking_last_lat';
+  static const String _prefLastLng = 'tracking_last_lng';
 
   @override
   bool build() {
@@ -31,12 +37,11 @@ class TrackingNotifier extends Notifier<bool> {
 
   /// 🔄 恢复会话 (App 启动时调用)
   Future<void> resumeTrackingSession(String authUid) async {
-    // 复用增强后的 startTracking 逻辑，因为它自带了状态检查
-    await startTracking(authUid);
+    await startTracking(authUid, isResume: true);
   }
 
-  /// ▶️ 开始追踪 (包含权限验证、防漏追踪、初始点生成)
-  Future<void> startTracking(String userId) async {
+  /// ▶️ 开始追踪 (增加了 isResume 标识来判断是否是断线重连)
+  Future<void> startTracking(String userId, {bool isResume = false}) async {
     if (state) return; 
 
     LocationPermission permission = await Geolocator.checkPermission();
@@ -47,7 +52,6 @@ class TrackingNotifier extends Notifier<bool> {
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
       
       try {
-        // 1. 检查是否为司机
         final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: userId).limit(1).get();
 
         if (userQuery.docs.isNotEmpty) {
@@ -62,7 +66,6 @@ class TrackingNotifier extends Notifier<bool> {
           return;
         }
 
-        // 🟢 2. 终极安全网：检查今天最后一次打卡状态
         final now = DateTime.now();
         final todayStr = DateFormat('yyyy-MM-dd').format(now);
         final attQuery = await FirebaseFirestore.instance
@@ -77,7 +80,6 @@ class TrackingNotifier extends Notifier<bool> {
           final lastRecord = docs.last.data();
           final lastSession = lastRecord['session'];
 
-          // 如果最后一次动作是下班或外出，则坚决不追踪
           if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
             debugPrint("🚫 User is currently Clocked Out or Break Out. Tracking aborted.");
             return;
@@ -91,9 +93,8 @@ class TrackingNotifier extends Notifier<bool> {
       await _fetchOfficeLocation();
 
       _currentUserId = userId;
-      _lastUploadedPosition = null; 
       _wasInsideOffice = null; 
-      state = true; // 状态置为正在追踪
+      state = true; 
 
       final prefs = await SharedPreferences.getInstance();
       final bool shouldNotify = prefs.getBool('notifications_enabled') ?? true;
@@ -101,21 +102,77 @@ class TrackingNotifier extends Notifier<bool> {
         await NotificationService().showTrackingNotification();
       }
 
-      // 🟢 3. 初始破冰点 (Initial Point): 解决一直不移动导致的流不触发问题
+      // 🟢 核心重构：判断初始点是否需要上传
       try {
         Position initialPos = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
         );
-        await _uploadLocationAndCheckGeofence(initialPos, forceUpload: true);
-        debugPrint("📍 Initial tracking point generated.");
+
+        bool shouldForceUpload = true;
+
+        if (isResume) {
+          // 如果是断线重连/重启，尝试读取本地保存的上一次坐标
+          final double? savedLat = prefs.getDouble(_prefLastLat);
+          final double? savedLng = prefs.getDouble(_prefLastLng);
+
+          if (savedLat != null && savedLng != null) {
+            double distanceMoved = Geolocator.distanceBetween(
+              savedLat, savedLng,
+              initialPos.latitude, initialPos.longitude,
+            );
+
+            // 如果位移小于 150 米，说明还在原地，取消强制上传
+            if (distanceMoved < _uploadDistanceFilter) {
+              shouldForceUpload = false;
+              
+              // 顺便把旧坐标放回内存变量中，供后续的 Stream 过滤使用
+              _lastUploadedPosition = Position(
+                latitude: savedLat, longitude: savedLng,
+                timestamp: DateTime.now(), accuracy: 0, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
+              );
+              
+              debugPrint("📍 Reconnected. Position didn't change enough (<150m). Skipped initial log generation.");
+            }
+          }
+        }
+
+        if (shouldForceUpload) {
+          await _uploadLocationAndCheckGeofence(initialPos, forceUpload: true);
+          debugPrint("📍 Initial tracking point generated.");
+        }
+
       } catch (e) {
         debugPrint("Could not get initial position: $e");
       }
 
-      const LocationSettings locationSettings = LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 10, // 这里的距离过滤器只是为了让Stream少触发，真正的上传防抖在 _uploadLocationAndCheckGeofence 里
-      );
+      late LocationSettings locationSettings;
+
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        locationSettings = AndroidSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 20, 
+          forceLocationManager: true,
+          // 🟢 核心：启动 Android 官方的前台服务 (Foreground Service)
+          foregroundNotificationConfig: const ForegroundNotificationConfig(
+            notificationText: "FieldTrack is recording your location in the background.",
+            notificationTitle: "GPS Tracking Active",
+            enableWakeLock: true, 
+          ),
+        );
+      } else if (defaultTargetPlatform == TargetPlatform.iOS || defaultTargetPlatform == TargetPlatform.macOS) {
+        locationSettings = AppleSettings(
+          accuracy: LocationAccuracy.high,
+          activityType: ActivityType.automotiveNavigation,
+          distanceFilter: 20, 
+          pauseLocationUpdatesAutomatically: false,
+          showBackgroundLocationIndicator: true,
+        );
+      } else {
+        locationSettings = const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 20, 
+        );
+      }
 
       _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings)
           .listen((Position position) {
@@ -159,8 +216,7 @@ class TrackingNotifier extends Notifier<bool> {
     }
   }
 
-  /// ☁️ 核心逻辑：上传位置 + 地理围栏检测
-  /// 增加 `forceUpload` 参数，用于强制写入初始坐标
+  /// ☁️ 核心逻辑：上传位置 + 地理围栏检测 + 保存到本地
   Future<void> _uploadLocationAndCheckGeofence(Position pos, {bool forceUpload = false}) async {
     if (_currentUserId == null) return;
 
@@ -185,7 +241,7 @@ class TrackingNotifier extends Notifier<bool> {
       _wasInsideOffice = isInside; 
     }
 
-    // ☁️ 距离过滤 (默认200米才上传)
+    // ☁️ 距离过滤 (默认150米才上传)
     if (!forceUpload && _lastUploadedPosition != null) {
       double distanceMoved = Geolocator.distanceBetween(
         _lastUploadedPosition!.latitude, _lastUploadedPosition!.longitude,
@@ -222,7 +278,15 @@ class TrackingNotifier extends Notifier<bool> {
 
     try {
       await batch.commit();
+      
+      // 🟢 更新内存缓存
       _lastUploadedPosition = pos;
+      
+      // 🟢 核心：将成功上传的坐标持久化到本地 SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_prefLastLat, pos.latitude);
+      await prefs.setDouble(_prefLastLng, pos.longitude);
+      
     } catch (e) {
       debugPrint("Error uploading location: $e");
     }

@@ -7,6 +7,14 @@
         <string>fetch</string>
         <string>location</string>
         <string>processing</string>
+        <string>remote-notification</string>
+    </array>
+
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>ms</string>
+        <string>zh</string>
     </array>
 
     <key>NSLocationWhenInUseUsageDescription</key>
