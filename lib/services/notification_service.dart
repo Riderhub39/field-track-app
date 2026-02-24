@@ -2,14 +2,13 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart'; 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:firebase_messaging/firebase_messaging.dart'; // 🟢 新增：FCM 核心包
+import 'package:firebase_messaging/firebase_messaging.dart'; 
 import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:shared_preferences/shared_preferences.dart'; 
 
-// 🟢 顶级函数：用于处理后台(App被杀掉或在后台时)接收到的推送消息
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   debugPrint("Handling a background message: ${message.messageId}");
@@ -21,16 +20,16 @@ class NotificationService {
   NotificationService._internal();
 
   final FlutterLocalNotificationsPlugin _notificationsPlugin = FlutterLocalNotificationsPlugin();
-  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance; // 🟢 FCM 实例
+  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance; 
 
   static const int _trackingId = 888;
   static const int _shiftStartId = 101;
-  static const int _shiftEndId = 102;
+  // static const int _shiftEndId = 102; // 🟢 我们不再使用固定的下班定时提醒
 
   static const String _trackingChannelId = 'tracking_channel';
   static const String _reminderChannelId = 'shift_reminders';
   static const String _statusChannelId = 'status_updates'; 
-  static const String _geofenceChannelId = 'geofence_channel'; // 🟢 围栏专用渠道
+  static const String _geofenceChannelId = 'geofence_channel'; 
 
   bool _isInitialized = false;
   final List<StreamSubscription> _subscriptions = [];
@@ -60,41 +59,32 @@ class NotificationService {
       await _notificationsPlugin.initialize(
         settings,
         onDidReceiveNotificationResponse: (NotificationResponse response) {
-          // 处理点击本地通知的逻辑（可跳转到特定页面）
           debugPrint("Notification clicked: ${response.payload}");
         },
       );
       
-      // 请求 Android 13+ 的本地通知权限
       final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
           _notificationsPlugin.resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>();
       await androidImplementation?.requestNotificationsPermission();
 
-      // 🟢 ========================================
-      // 🟢 FCM 真实推送初始化逻辑 (Push Notifications)
-      // 🟢 ========================================
+      // ========================================
+      // FCM Initialization
+      // ========================================
       
-      // 1. 请求推送权限 (尤其针对 iOS)
       NotificationSettings fcmSettings = await _firebaseMessaging.requestPermission(
         alert: true, badge: true, sound: true, provisional: false,
       );
       debugPrint('User granted permission: ${fcmSettings.authorizationStatus}');
 
-      // 2. 获取并上传 FCM Token 到数据库 (非常关键！Admin 发消息全靠这个 Token)
       String? token = await _firebaseMessaging.getToken();
       if (token != null) {
-        _saveDeviceTokenToDatabase(token);
+        // _saveDeviceTokenToDatabase(token); // handled during login
       }
       
-      // 监听 Token 刷新
-      _firebaseMessaging.onTokenRefresh.listen(_saveDeviceTokenToDatabase);
-
-      // 3. 配置 FCM 前台消息展示
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         debugPrint('Got a message whilst in the foreground!');
         if (message.notification != null) {
-          // 当 App 在前台时，FCM 默认不弹窗，我们需要用 LocalNotifications 弹出来
           showStatusNotification(
             message.notification!.title ?? 'New Alert', 
             message.notification!.body ?? 'You have a new message'
@@ -102,7 +92,6 @@ class NotificationService {
         }
       });
 
-      // 4. 配置 FCM 后台消息处理
       FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
 
       _isInitialized = true;
@@ -112,29 +101,11 @@ class NotificationService {
     }
   }
 
-  // 🟢 辅助函数：将设备的推送 Token 存入对应用户的 profile
-  Future<void> _saveDeviceTokenToDatabase(String token) async {
-    // We only save if there is a logged in user.
-    // However, FirebaseAuth might not be ready yet when init is called from main.dart.
-    // So we use a Future.delayed or rely on the user to login.
-    // In our architecture, it's best called after successful login too.
-    try {
-      // Find the user doc where authUid matches current user
-      // Note: In `main.dart` we initialize this before Login, so we might not have a user yet.
-      // This function is safe to fail if no user is found.
-      // (For robustness, you should also call this method specifically right after the user successfully logs in.)
-    } catch (e) {
-       debugPrint("Cannot save token yet: $e");
-    }
-  }
-
-  // 暴露一个公共方法，供登录成功后调用以绑定 Token
   Future<void> bindFCMToken(String uid) async {
     try {
       String? token = await _firebaseMessaging.getToken();
       if (token == null) return;
       
-      // 找到该 uid 对应的 User 文档
       final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: uid).limit(1).get();
       if (userQuery.docs.isNotEmpty) {
         await userQuery.docs.first.reference.update({
@@ -158,7 +129,6 @@ class NotificationService {
     stopListening(); 
     debugPrint("🎧 Started listening for Admin updates for UID: $uid");
 
-    // 1. Listen for Leave Approvals
     bool isLeaveInitial = true; 
     _subscriptions.add(
       FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: uid).snapshots().listen((snapshot) {
@@ -172,7 +142,6 @@ class NotificationService {
       })
     );
 
-    // 2. Listen for Attendance Correction Replies
     bool isCorrectionInitial = true;
     _subscriptions.add(
       FirebaseFirestore.instance.collection('attendance_corrections').where('authUid', isEqualTo: uid).snapshots().listen((snapshot) {
@@ -186,7 +155,6 @@ class NotificationService {
       })
     );
 
-    // 3. Listen for Profile Update Requests
     bool isProfileInitial = true;
     _subscriptions.add(
       FirebaseFirestore.instance.collection('edit_requests').where('uid', isEqualTo: uid).snapshots().listen((snapshot) {
@@ -200,7 +168,6 @@ class NotificationService {
       })
     );
 
-    // 4. Listen for New Payslips
     bool isPayslipInitial = true;
     _subscriptions.add(
       FirebaseFirestore.instance.collection('payslips').where('uid', isEqualTo: uid).where('status', isEqualTo: 'Published').snapshots().listen((snapshot) {
@@ -214,7 +181,6 @@ class NotificationService {
       })
     );
     
-    // 5. Listen for Announcements
     bool isAnnounceInitial = true;
     _subscriptions.add(
       FirebaseFirestore.instance.collection('announcements').orderBy('createdAt', descending: true).limit(1).snapshots().listen((snapshot) {
@@ -256,14 +222,14 @@ class NotificationService {
       _trackingChannelId,
       'GPS Tracking Service',
       channelDescription: 'Running in background to track location',
-      importance: Importance.low, // 保持低重要性，避免打扰
+      importance: Importance.low, 
       priority: Priority.low,
-      ongoing: true,      // 🟢 核心：设置为常驻通知，用户无法通过侧滑清除
-      autoCancel: false,  // 🟢 核心：禁止点击通知后自动取消
+      ongoing: true,      
+      autoCancel: false,  
       showWhen: true,
-      usesChronometer: true, // 🟢 增强：显示已追踪时间，增加透明度
-      onlyAlertOnce: true,   // 🟢 优化：多次更新通知时只响/震一次
-      icon: '@mipmap/ic_launcher', // 确保图标正确显示
+      usesChronometer: true, 
+      onlyAlertOnce: true,   
+      icon: '@mipmap/ic_launcher', 
     );
 
     const NotificationDetails details = NotificationDetails(android: androidDetails);
@@ -283,7 +249,6 @@ class NotificationService {
   // 🏢 Geofence Alert (Smart Reminders)
   // =========================================================
 
-  // 🟢 新增：用于显示地理围栏提醒的本地通知
   Future<void> showGeofenceAlert(String title, String body) async {
     if (!await _canShowNotification()) return;
 
@@ -295,7 +260,7 @@ class NotificationService {
       priority: Priority.high,
       icon: '@mipmap/ic_launcher',
       color: Color(0xFF15438c),
-      styleInformation: BigTextStyleInformation(''), // 支持长文本
+      styleInformation: BigTextStyleInformation(''), 
     );
 
     const NotificationDetails platformDetails = NotificationDetails(
@@ -304,9 +269,38 @@ class NotificationService {
     );
 
     await _notificationsPlugin.show(
-      999, // 使用固定的ID避免弹出一堆
+      999, // Use fixed ID to prevent spamming
       title,
       body,
+      platformDetails,
+    );
+  }
+
+  // 🟢 新增方法：专供 TrackingService 调用，当离开围栏且需要打卡下班时触发
+  Future<void> showForgotClockOutAlert() async {
+    if (!await _canShowNotification()) return;
+
+    const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
+      _geofenceChannelId, // 借用高优先级的频道
+      'Geofence Alerts',
+      importance: Importance.max,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+      color: Colors.red,
+      sound: RawResourceAndroidNotificationSound('notification_sound'), // 如果您有自定义声音
+      enableVibration: true,
+      styleInformation: BigTextStyleInformation(''), 
+    );
+
+    const NotificationDetails platformDetails = NotificationDetails(
+      android: androidDetails,
+      iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true),
+    );
+
+    await _notificationsPlugin.show(
+      998, 
+      '⚠️ ${'notif.shift_end_title'.tr()}', // 🟢 使用了插值语法替换掉加号
+      'You have left the workplace after your shift. Did you forget to Clock Out?',
       platformDetails,
     );
   }
@@ -342,11 +336,13 @@ class NotificationService {
   // ⏰ Shift Reminders (Scheduled)
   // =========================================================
 
+  // 🟢 修改：现在只保留上班前的提前提醒（因为下班需要结合地理位置动态判断）
   Future<void> scheduleShiftReminders(DateTime shiftStart, DateTime shiftEnd) async {
     if (!await _canShowNotification()) return;
     
     final now = DateTime.now();
 
+    // 只保留上班前 15 分钟的无脑定时提醒
     final scheduledStart = shiftStart.subtract(const Duration(minutes: 15));
     if (scheduledStart.isAfter(now)) {
       await _scheduleNotification(
@@ -356,16 +352,8 @@ class NotificationService {
         scheduledStart,
       );
     }
-
-    final scheduledEnd = shiftEnd.subtract(const Duration(minutes: 10));
-    if (scheduledEnd.isAfter(now)) {
-      await _scheduleNotification(
-        _shiftEndId,
-        'notif.shift_end_title'.tr(),
-        'notif.shift_end_body'.tr(),
-        scheduledEnd,
-      );
-    }
+    
+    // 删除了 shiftEnd 的定时逻辑，改为依托 tracking_service 动态触发
   }
 
   Future<void> _scheduleNotification(int id, String title, String body, DateTime scheduledTime) async {
@@ -379,7 +367,7 @@ class NotificationService {
           android: AndroidNotificationDetails(
             _reminderChannelId,
             'Shift Reminders',
-            channelDescription: 'Reminders for clock-in and clock-out',
+            channelDescription: 'Reminders for clock-in',
             importance: Importance.high,
             priority: Priority.high,
           ),
@@ -395,6 +383,6 @@ class NotificationService {
 
   Future<void> cancelAllReminders() async {
     await _notificationsPlugin.cancel(_shiftStartId);
-    await _notificationsPlugin.cancel(_shiftEndId);
+    // await _notificationsPlugin.cancel(_shiftEndId); // 已移除
   }
 }

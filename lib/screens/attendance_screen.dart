@@ -12,12 +12,12 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:network_info_plus/network_info_plus.dart'; 
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 引入 Riverpod
+import 'package:flutter_riverpod/flutter_riverpod.dart'; 
 
 import '../widgets/shimmer_loading.dart';
 import '../widgets/face_camera_view.dart';
 import 'correction_request_screen.dart';
-import '../services/tracking_service.dart'; // 包含 trackingProvider 和 TrackingNotifier
+import '../services/tracking_service.dart'; 
 
 class AttendanceScreen extends StatefulWidget {
   const AttendanceScreen({super.key});
@@ -35,7 +35,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _loadUserProfile();
   }
 
-  /// Loads the user's face ID photo for the app bar avatar
   Future<void> _loadUserProfile() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -125,11 +124,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 }
 
-// ==========================================
-//  Tab 1: Action Tab (Optimized with Anti-Spam)
-// ==========================================
-
-// 🟢 1. 改为 ConsumerStatefulWidget 以支持 Riverpod
 class AttendanceActionTab extends ConsumerStatefulWidget {
   const AttendanceActionTab({super.key});
   @override
@@ -292,7 +286,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       final double officeLng = (data['longitude'] as num).toDouble();
       final double allowedRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
 
-      // WiFi Check
       List<Map<String, String>> allowedWifiList = [];
       if (data['allowedWifis'] is List) {
         for (var item in data['allowedWifis']) {
@@ -339,7 +332,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
         }
       }
 
-      // GPS Check
       Position? currentPos = await _determinePosition();
       if (currentPos == null) throw "Cannot determine GPS location.";
 
@@ -378,22 +370,19 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     if (user == null) return;
 
     final now = DateTime.now();
+    // 🟢 Locale aware formatting not needed here as it's internal logic
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
-    // We only look at active/verified records to determine the next logical action
     final q = await FirebaseFirestore.instance
         .collection('attendance')
         .where('uid', isEqualTo: user.uid)
         .where('date', isEqualTo: todayStr)
-        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected']) // Ignore Archived
+        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
         .get();
 
     bool hasAnyRecord = q.docs.isNotEmpty; 
-    
     String? lastSession;
     bool hasClockedOut = false;
-    
-    // 🟢 1. 计算最近一次打卡时间
     DateTime? lastPunchTime;
 
     if (hasAnyRecord) {
@@ -402,14 +391,12 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       final last = docs.last;
       
       lastSession = last['session'];
-      lastPunchTime = (last['timestamp'] as Timestamp).toDate(); // 获取上次打卡时间
-      
+      lastPunchTime = (last['timestamp'] as Timestamp).toDate(); 
       hasClockedOut = docs.any((doc) => doc['session'] == 'Clock Out');
     }
 
     if (!mounted) return;
 
-    // 🟢 2. 执行 30 分钟防抖检查 (Cooldown Check)
     if (lastPunchTime != null) {
       final difference = now.difference(lastPunchTime);
       if (difference.inMinutes < 30) {
@@ -433,7 +420,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
             ],
           ),
         );
-        return; // 拦截执行，不再弹出下方选择框
+        return; 
       }
     }
 
@@ -532,7 +519,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 
   void _handleAction(String action) async {
     Navigator.pop(context); 
-
     bool isAllowed = await _validateRestrictions();
     if (!isAllowed) return; 
 
@@ -542,8 +528,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 
   Future<void> _takePhoto() async {
     if (_referenceFaceIdPath == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("att.err_no_face_id".tr())));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("att.err_no_face_id".tr())));
       return;
     }
 
@@ -616,7 +601,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       });
     }
   }
-// 🟢 替换原来的 _processUploadWithRetry 函数
+
   Future<void> _processUpload({
     required String uid,
     required String email,
@@ -638,12 +623,10 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
           .child(uid)
           .child(fileName);
       
-      // 上传照片
       await storageRef.putFile(File(file.path));
       String photoUrl = await storageRef.getDownloadURL();
 
       final todayStr = DateFormat('yyyy-MM-dd').format(timestamp);
-      final timeStr = DateFormat('HH:mm:ss').format(timestamp);
       
       Map<String, dynamic> newRecord = {
         'uid': uid,
@@ -656,26 +639,10 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
         'address': addressStr,
         'photoUrl': photoUrl, 
         'timestamp': Timestamp.fromDate(timestamp), 
-        'manualIn': null,
-        'manualOut': null,
       };
 
-      if (action == 'Clock In') {
-        newRecord['timeIn'] = Timestamp.fromDate(timestamp);
-        newRecord['timeInStr'] = timeStr;
-      } else if (action == 'Break Out') {
-        newRecord['breakOut'] = Timestamp.fromDate(timestamp);
-      } else if (action == 'Break In') {
-        newRecord['breakIn'] = Timestamp.fromDate(timestamp);
-      } else if (action == 'Clock Out') {
-        newRecord['timeOut'] = Timestamp.fromDate(timestamp);
-        newRecord['timeOutStr'] = timeStr;
-      }
-
-      // 写入打卡记录 (Firebase 会自动处理断网延迟上传)
       await FirebaseFirestore.instance.collection('attendance').add(newRecord);
 
-      // 触发追踪状态更新
       if (action == 'Clock In') {
         ref.read(trackingProvider.notifier).startTracking(uid);
       } else if (action == 'Break Out') {
@@ -705,7 +672,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     }
   }
   
-    Future<String> _fetchAddressString(Position position) async {
+  Future<String> _fetchAddressString(Position position) async {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
       if (placemarks.isNotEmpty) {
@@ -726,7 +693,8 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     if (_isLoading) return const Center(child: CircularProgressIndicator());
 
     final now = DateTime.now();
-    final displayDate = DateFormat('dd/MM/yyyy (EEE)').format(now);
+    // 🟢 Apply locale to DateFormat for proper translation of EEE (Mon, Tue, Wed...)
+    final displayDate = DateFormat('dd/MM/yyyy (EEE)', context.locale.languageCode).format(now);
     const whiteTextColor = Color(0xFFFFFFFF);
     const naviColor = Color(0xFF15438c);
 
@@ -899,7 +867,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 }
 
 // ==========================================
-//  Tab 2: History (Staff Uploads Only, Supports Archived)
+//  Tab 2: History
 // ==========================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
@@ -918,7 +886,6 @@ class _HistoryTabState extends State<HistoryTab> {
 
     return Column(
       children: [
-        // Header
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 20, 16, 10),
           child: Row(
@@ -958,7 +925,6 @@ class _HistoryTabState extends State<HistoryTab> {
         ),
         const Divider(height: 1),
         
-        // List
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
@@ -973,14 +939,10 @@ class _HistoryTabState extends State<HistoryTab> {
               
               final allDocs = snapshot.data?.docs ?? [];
               
-              // 🟢 Core Filter: Keep original self-clocked records, even if archived
               final docs = allDocs.where((d) {
                 final data = d.data() as Map<String, dynamic>;
                 final address = data['address']?.toString() ?? '';
-                
-                // Exclude any records manually generated by Admin backend
-                if (address.contains("Admin Manual") || address.contains("Admin Override")) return false;
-                
+                if (address.contains("Admin Manual") || address.contains("Admin Override") || address.contains("System Auto Clock Out")) return false;
                 return true;
               }).toList();
 
@@ -994,8 +956,12 @@ class _HistoryTabState extends State<HistoryTab> {
                 separatorBuilder: (ctx, i) => const SizedBox(height: 10),
                 itemBuilder: (context, index) {
                   final data = docs[index].data() as Map<String, dynamic>;
-                  final ts = (data['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+                  final ts = (data['timestamp'] as Timestamp).toDate();
                   
+                  // 🟢 Removed manualIn checks, directly format timestamp with Locale
+                  String displayTime = DateFormat('HH:mm:ss', context.locale.languageCode).format(ts);
+                  String displayDate = DateFormat('dd-MM-yyyy', context.locale.languageCode).format(ts);
+
                   String status = data['verificationStatus'] ?? 'Pending';
                   bool isArchived = status == 'Archived';
 
@@ -1009,19 +975,18 @@ class _HistoryTabState extends State<HistoryTab> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // A. Time Column
                         Expanded(
                           flex: 3,
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(DateFormat('dd-MM-yyyy').format(ts),
+                              Text(displayDate,
                                   style: TextStyle(
                                       fontWeight: FontWeight.bold, 
                                       fontSize: 13, 
                                       color: isArchived ? Colors.grey : Colors.black54, 
                                   )),
-                              Text(DateFormat('HH:mm:ss').format(ts), 
+                              Text(displayTime, 
                                   style: TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 14,
@@ -1031,8 +996,6 @@ class _HistoryTabState extends State<HistoryTab> {
                             ],
                           ),
                         ),
-                        
-                        // B. Address Column
                         Expanded(
                           flex: 4,
                           child: Text(
@@ -1045,8 +1008,6 @@ class _HistoryTabState extends State<HistoryTab> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                        
-                        // C. Status Icon Column
                         Expanded(
                           flex: 2,
                           child: Align(
@@ -1121,6 +1082,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
     int minutes = d.inMinutes;
     int h = minutes ~/ 60;
     int m = minutes % 60;
+    // 🟢 Translate hours and minutes formatting
     return "${h}h ${m}m";
   }
 
@@ -1133,7 +1095,9 @@ class _ScheduleTabState extends State<ScheduleTab> {
     final endDate = _currentStartDate.add(const Duration(days: 6));
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(endDate);
-    final displayRange = "${DateFormat('dd MMM').format(_currentStartDate)} - ${DateFormat('dd MMM').format(endDate)}";
+    
+    // 🟢 Locale aware DateFormat for headers
+    final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(endDate)}";
 
     return Column(
       children: [
@@ -1217,20 +1181,26 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         QueryDocumentSnapshot? breakOutDoc;
                         try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (e) { breakOutDoc = null; }
 
+                        // 🟢 Only rely on precise Timestamp
                         if (clockInDoc != null) {
-                           final ts = ((clockInDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
-                           timeIn = DateFormat('HH:mm').format(ts);
-                           status = "Working";
-                           statusColor = Colors.blue;
+                           final data = clockInDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
                            
+                           timeIn = DateFormat('HH:mm').format(ts);
                            if (schedStart != null && ts.isAfter(schedStart)) {
                              lateStr = _formatDuration(ts.difference(schedStart));
                            }
+                           
+                           status = "Working";
+                           statusColor = Colors.blue;
                         }
 
                         if (clockOutDoc != null) {
-                           final ts = ((clockOutDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
+                           final data = clockOutDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
+                           
                            timeOut = DateFormat('HH:mm').format(ts);
+                           
                            status = "Present";
                            statusColor = Colors.green;
                            
@@ -1242,13 +1212,14 @@ class _ScheduleTabState extends State<ScheduleTab> {
                              }
                            }
                         } else if (breakOutDoc != null) {
-                           final ts = ((breakOutDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
+                           final data = breakOutDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
                            timeOut = DateFormat('HH:mm').format(ts);
                         }
                       }
 
                       return _buildScheduleCard(
-                        scheduleData, timeIn, timeOut, status, statusColor, lateStr, underStr, otStr, isAbsent
+                        scheduleData, timeIn, timeOut, status, statusColor, lateStr, underStr, otStr, isAbsent, context
                       );
                     }
                   );
@@ -1261,10 +1232,14 @@ class _ScheduleTabState extends State<ScheduleTab> {
     );
   }
   
-  Widget _buildScheduleCard(Map<String, dynamic> scheduleData, String inTime, String outTime, String status, Color color, String late, String under, String ot, bool isAbsent) {
+  // 🟢 Pass context to ensure context.locale can be used
+  Widget _buildScheduleCard(Map<String, dynamic> scheduleData, String inTime, String outTime, String status, Color color, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
-    final weekDay = DateFormat('EEEE').format(dateObj);
-    final fmtDate = DateFormat('dd/MM/yyyy').format(dateObj);
+    
+    // 🟢 Locale aware formatting for weekday
+    final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
+    final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
+    
     String shiftStart = scheduleData['start'] != null ? DateFormat('HH:mm').format((scheduleData['start'] as Timestamp).toDate().toLocal()) : "--:--";
     String shiftEnd = scheduleData['end'] != null ? DateFormat('HH:mm').format((scheduleData['end'] as Timestamp).toDate().toLocal()) : "--:--";
 
@@ -1430,7 +1405,8 @@ class _SubmitTabState extends State<SubmitTab> {
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(effectiveEndDate);
     
-    final displayRange = "${DateFormat('dd MMM').format(_currentStartDate)} - ${DateFormat('dd MMM').format(originalEndDate)}";
+    // 🟢 Locale aware DateFormat for headers
+    final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(originalEndDate)}";
     bool isFutureWeek = _currentStartDate.isAfter(endOfToday);
 
     return Column(
@@ -1525,7 +1501,9 @@ class _SubmitTabState extends State<SubmitTab> {
                         try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (e) { breakOutDoc = null; }
 
                         if (clockInDoc != null) {
-                           final ts = ((clockInDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
+                           final data = clockInDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
+                           
                            timeIn = DateFormat('HH:mm').format(ts);
                            if (schedStart != null && ts.isAfter(schedStart)) {
                              lateStr = _formatDuration(ts.difference(schedStart));
@@ -1533,8 +1511,11 @@ class _SubmitTabState extends State<SubmitTab> {
                         }
 
                         if (clockOutDoc != null) {
-                           final ts = ((clockOutDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
+                           final data = clockOutDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
+                           
                            timeOut = DateFormat('HH:mm').format(ts);
+                           
                            if (schedEnd != null) {
                              if (ts.isAfter(schedEnd)) {
                                otStr = _formatDuration(ts.difference(schedEnd));
@@ -1543,13 +1524,14 @@ class _SubmitTabState extends State<SubmitTab> {
                              }
                            }
                         } else if (breakOutDoc != null) {
-                           final ts = ((breakOutDoc.data() as Map<String,dynamic>)['timestamp'] as Timestamp).toDate();
+                           final data = breakOutDoc.data() as Map<String, dynamic>;
+                           final ts = (data['timestamp'] as Timestamp).toDate();
                            timeOut = DateFormat('HH:mm').format(ts);
                         }
                       }
 
                       return _buildSubmitCard(
-                        scheduleData, attendanceId, timeIn, timeOut, lateStr, underStr, otStr, isAbsent
+                        scheduleData, attendanceId, timeIn, timeOut, lateStr, underStr, otStr, isAbsent, context
                       );
                     }
                   );
@@ -1562,10 +1544,14 @@ class _SubmitTabState extends State<SubmitTab> {
     );
   }
 
-  Widget _buildSubmitCard(Map<String, dynamic> scheduleData, String? attendanceId, String inTime, String outTime, String late, String under, String ot, bool isAbsent) {
+  // 🟢 Pass context here too
+  Widget _buildSubmitCard(Map<String, dynamic> scheduleData, String? attendanceId, String inTime, String outTime, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
-    final weekDay = DateFormat('EEEE').format(dateObj);
-    final fmtDate = DateFormat('dd/MM/yyyy').format(dateObj);
+    
+    // 🟢 Locale aware formatting for weekday
+    final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
+    final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
+    
     String shiftStart = scheduleData['start'] != null ? DateFormat('HH:mm').format((scheduleData['start'] as Timestamp).toDate().toLocal()) : "--:--";
     String shiftEnd = scheduleData['end'] != null ? DateFormat('HH:mm').format((scheduleData['end'] as Timestamp).toDate().toLocal()) : "--:--";
 

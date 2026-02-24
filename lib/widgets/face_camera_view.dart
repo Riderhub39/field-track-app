@@ -29,11 +29,11 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
   
   // --- Flow Control ---
   // 0: Find Center Face -> Capture
-  // 1: Turn Head Left or Right (Liveness Check)
+  // 1: Nod Head Up or Down (Liveness Check)
   // 2: Verifying Captured Image
   int _step = 0; 
   
-  XFile? _tempCapturedImage; // 暂存刚开始拍下的正脸照片
+  XFile? _tempCapturedImage; 
   bool _hasCaptured = false; 
   bool _isVerifying = false; 
 
@@ -53,7 +53,7 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
       options: FaceDetectorOptions(
         performanceMode: FaceDetectorMode.accurate, 
         enableLandmarks: true,
-        enableClassification: false, // 不再需要闭眼检测
+        enableClassification: false, 
         enableContours: false,
         minFaceSize: 0.15, 
       ),
@@ -154,29 +154,30 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
             _updateUI(status: 'camera.center_face'.tr(), color: Colors.orange, step: 0);
           }
         } else {
-          // 🟢 核心重构流程：0.找正脸拍照 -> 1.活体摇头 -> 2.验证
+          // 🟢 读取面部的偏航角(Yaw 左右) 和 俯仰角(Pitch 上下)
           final double? yaw = face.headEulerAngleY; 
-          if (yaw == null) return;
+          final double? pitch = face.headEulerAngleX; 
+          
+          if (yaw == null || pitch == null) return;
 
           if (_step == 0 && !_hasCaptured) {
-            // 阶段 0：要求用户正对镜头，准备抓拍
-            if (yaw > -10 && yaw < 10) { 
-               // 角度非常正，立刻抓拍暂存
+            // 阶段 0：要求用户必须是正脸（不偏头也不低头/抬头），确保抓拍质量
+            if (yaw > -10 && yaw < 10 && pitch > -10 && pitch < 10) { 
                await _captureFrontFace();
             } else {
                _updateUI(status: "Look straight at the camera", color: Colors.yellowAccent, step: 0);
             }
           } else if (_step == 1 && _hasCaptured) {
-            // 阶段 1：照片已拍好，现在要求摇头进行活体检测
+            // 阶段 1：照片已拍好，要求用户向上或向下点头进行活体检测
             _updateUI(
-              status: "Please turn your head left or right\nSila toleh ke kiri atau kanan", 
+              status: "Please nod up or down\nSila angguk ke atas atau bawah", 
               color: Colors.greenAccent, 
               step: 1
             );
 
-            // 如果摇头角度超过 20 度（不论左右），认为活体检测通过！
-            if (yaw > 20 || yaw < -20) {
-              _startVerificationProcess(); // 触发最终的比对流程
+            // 🟢 只要检测到向上仰头 (>15度) 或向下低头 (< -15度) 任意一个动作，即判定为活人！
+            if (pitch > 15 || pitch < -15) {
+              _startVerificationProcess(); 
             }
           }
         }
@@ -198,18 +199,16 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
     return xOk && yOk; 
   }
 
-  // 🟢 第一步：仅仅是静默抓拍照片，不中断视频流，不立刻比对
+  // 🟢 静默抓拍照片，拍完恢复视频流
   Future<void> _captureFrontFace() async {
     if (_hasCaptured) return;
     
     try {
-      // 在有些设备上，takePicture 不能与 startImageStream 同时运行
       await _controller!.stopImageStream();
       _tempCapturedImage = await _controller!.takePicture();
       _hasCaptured = true;
-      _step = 1; // 拍照完成，进入活体检测阶段
+      _step = 1; 
 
-      // 拍完照立刻恢复视频流，让用户可以进行摇头动作
       await _controller!.startImageStream(_processImage);
 
     } catch (e) {
@@ -218,32 +217,31 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
     }
   }
 
-  // 🟢 第二步：活体检测通过后，拿刚才拍好的照片去比对
+  // 🟢 活体通过后，验证刚才暂存的照片
   Future<void> _startVerificationProcess() async {
     if (_isVerifying || _tempCapturedImage == null) return;
     
     setState(() {
       _isVerifying = true;
-      _step = 2; // 进入最终验证阶段
+      _step = 2; 
       _statusText = 'camera.verifying'.tr();
       _statusColor = Colors.blue;
     });
 
     try {
-      await _controller!.stopImageStream(); // 停止摄像头
+      await _controller!.stopImageStream(); 
 
       if (widget.referencePath == null) {
         if (mounted) Navigator.pop(context, _tempCapturedImage);
         return;
       }
 
-      // 验证刚才抓拍的正脸图片
       VerifyResult result = await _faceService.compareFacesDetailed(widget.referencePath!, _tempCapturedImage!);
 
       if (!mounted) return;
 
       if (result.verified) {
-        Navigator.pop(context, _tempCapturedImage); // 验证成功，返回最开始拍的清晰正脸照
+        Navigator.pop(context, _tempCapturedImage); 
       } else {
         setState(() {
           _statusText = 'camera.failed'.tr();
@@ -284,7 +282,7 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
       _hasCaptured = false;
       _isVerifying = false;
       _step = 0;
-      _tempCapturedImage = null; // 清空暂存的图片
+      _tempCapturedImage = null; 
       _statusText = 'camera.align'.tr();
       _statusColor = Colors.white;
     });
@@ -411,7 +409,6 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  // 白 (准备) -> 绿 (已抓拍，准备摇头) -> 蓝 (正在处理)
                   color: _step == 0 ? Colors.white : (_step == 1 ? Colors.greenAccent : Colors.blueAccent), 
                   width: 4
                 ),
@@ -424,14 +421,16 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
             left: 20, right: 20,
             child: Column(
               children: [
-                // 提示图标的变化
+                // 🟢 UI图标改为上下箭头，提示点头/抬头
                 if (_step == 1)
                   const Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Icon(Icons.keyboard_double_arrow_left, color: Colors.greenAccent, size: 40),
+                      Icon(Icons.keyboard_double_arrow_up, color: Colors.greenAccent, size: 40),
+                      SizedBox(width: 8),
                       Icon(Icons.face, color: Colors.greenAccent, size: 40),
-                      Icon(Icons.keyboard_double_arrow_right, color: Colors.greenAccent, size: 40),
+                      SizedBox(width: 8),
+                      Icon(Icons.keyboard_double_arrow_down, color: Colors.greenAccent, size: 40),
                     ],
                   ),
                 const SizedBox(height: 10),
