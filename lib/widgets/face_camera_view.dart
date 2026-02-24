@@ -28,10 +28,14 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
   bool _isLoadingReference = true;
   
   // --- Flow Control ---
-  // 0: Find Face, 1: Blink (Liveness), 2: Verifying/Capturing
+  // 0: Find Center Face -> Capture
+  // 1: Turn Head Left or Right (Liveness Check)
+  // 2: Verifying Captured Image
   int _step = 0; 
-  bool _eyesPreviouslyClosed = false; 
+  
+  XFile? _tempCapturedImage; // 暂存刚开始拍下的正脸照片
   bool _hasCaptured = false; 
+  bool _isVerifying = false; 
 
   // --- Logic ---
   late final FaceDetector _faceDetector;
@@ -47,11 +51,11 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
     // 1. Initialize Face Detector
     _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
-        performanceMode: FaceDetectorMode.accurate, // Consider 'fast' if still slow on older devices
+        performanceMode: FaceDetectorMode.accurate, 
         enableLandmarks: true,
-        enableClassification: true, 
+        enableClassification: false, // 不再需要闭眼检测
         enableContours: false,
-        minFaceSize: 0.15, // Keep at 0.15 to avoid detecting faces too far away
+        minFaceSize: 0.15, 
       ),
     );
 
@@ -127,7 +131,7 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
 
   // --- Real-time Processing ---
   Future<void> _processImage(CameraImage image) async {
-    if (_isLoadingReference || _isProcessing || _hasCaptured || !mounted) return;
+    if (_isLoadingReference || _isProcessing || _isVerifying || !mounted) return;
     _isProcessing = true;
 
     try {
@@ -137,27 +141,43 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
       final faces = await _faceDetector.processImage(inputImage);
 
       if (faces.isEmpty) {
-        if (_step != 0 && mounted) {
+        if (_step != 0 && mounted && !_hasCaptured) {
           _updateUI(status: 'camera.no_face'.tr(), color: Colors.red, step: 0);
-          _eyesPreviouslyClosed = false;
         }
       } else {
         final face = faces.first;
         
-        // 🟢 RELAXED CENTERING LOGIC
         bool isCentered = _isFaceCentered(face, image.width, image.height);
         
         if (!isCentered) {
-          // If the face is way off, ask to center.
-          // But now "Centered" allows a much wider area.
-          _updateUI(status: 'camera.center_face'.tr(), color: Colors.orange, step: 0);
-          _eyesPreviouslyClosed = false;
+          if (!_hasCaptured) {
+            _updateUI(status: 'camera.center_face'.tr(), color: Colors.orange, step: 0);
+          }
         } else {
-          // 2. Face is valid, check liveness
-          if (_step == 0) {
-            _updateUI(status: "Please Blink\nSila Kelip Mata", color: Colors.yellowAccent, step: 1);
-          } else if (_step == 1) {
-            _checkBlinkLiveness(face);
+          // 🟢 核心重构流程：0.找正脸拍照 -> 1.活体摇头 -> 2.验证
+          final double? yaw = face.headEulerAngleY; 
+          if (yaw == null) return;
+
+          if (_step == 0 && !_hasCaptured) {
+            // 阶段 0：要求用户正对镜头，准备抓拍
+            if (yaw > -10 && yaw < 10) { 
+               // 角度非常正，立刻抓拍暂存
+               await _captureFrontFace();
+            } else {
+               _updateUI(status: "Look straight at the camera", color: Colors.yellowAccent, step: 0);
+            }
+          } else if (_step == 1 && _hasCaptured) {
+            // 阶段 1：照片已拍好，现在要求摇头进行活体检测
+            _updateUI(
+              status: "Please turn your head left or right\nSila toleh ke kiri atau kanan", 
+              color: Colors.greenAccent, 
+              step: 1
+            );
+
+            // 如果摇头角度超过 20 度（不论左右），认为活体检测通过！
+            if (yaw > 20 || yaw < -20) {
+              _startVerificationProcess(); // 触发最终的比对流程
+            }
           }
         }
       }
@@ -168,66 +188,62 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
     }
   }
 
-  // 🟢 Modified Check: Relaxed Boundaries
   bool _isFaceCentered(Face face, int imgWidth, int imgHeight) {
     double centerX = face.boundingBox.center.dx;
     double centerY = face.boundingBox.center.dy;
-
-    // Previous Strict: 0.2 - 0.8
-    // New Relaxed: 0.1 - 0.9 (Allow face almost anywhere except edges)
-    // Also ensuring face is large enough (width > 15% of image)
     
     bool xOk = centerX > imgWidth * 0.1 && centerX < imgWidth * 0.9;
     bool yOk = centerY > imgHeight * 0.1 && centerY < imgHeight * 0.9;
     
-    // Optional: Ensure face isn't too small (too far away)
-    // bool sizeOk = face.boundingBox.width > imgWidth * 0.25; 
-
-    return xOk && yOk; // && sizeOk;
+    return xOk && yOk; 
   }
 
-  void _checkBlinkLiveness(Face face) {
-    final leftOpen = face.leftEyeOpenProbability;
-    final rightOpen = face.rightEyeOpenProbability;
+  // 🟢 第一步：仅仅是静默抓拍照片，不中断视频流，不立刻比对
+  Future<void> _captureFrontFace() async {
+    if (_hasCaptured) return;
+    
+    try {
+      // 在有些设备上，takePicture 不能与 startImageStream 同时运行
+      await _controller!.stopImageStream();
+      _tempCapturedImage = await _controller!.takePicture();
+      _hasCaptured = true;
+      _step = 1; // 拍照完成，进入活体检测阶段
 
-    if (leftOpen == null || rightOpen == null) return;
+      // 拍完照立刻恢复视频流，让用户可以进行摇头动作
+      await _controller!.startImageStream(_processImage);
 
-    // Thresholds: < 0.2 Closed, > 0.5 Open (Lowered open threshold for faster detection)
-    bool isClosed = (leftOpen < 0.2 && rightOpen < 0.2);
-    bool isOpen = (leftOpen > 0.5 && rightOpen > 0.5);
-
-    if (isClosed) {
-      _eyesPreviouslyClosed = true; 
-    } else if (isOpen && _eyesPreviouslyClosed) {
-      _captureAndVerify();
+    } catch (e) {
+      debugPrint("Silent capture error: $e");
+      _resetCamera();
     }
   }
 
-  Future<void> _captureAndVerify() async {
-    if (_hasCaptured) return;
+  // 🟢 第二步：活体检测通过后，拿刚才拍好的照片去比对
+  Future<void> _startVerificationProcess() async {
+    if (_isVerifying || _tempCapturedImage == null) return;
     
     setState(() {
-      _hasCaptured = true;
-      _step = 2;
+      _isVerifying = true;
+      _step = 2; // 进入最终验证阶段
       _statusText = 'camera.verifying'.tr();
       _statusColor = Colors.blue;
     });
 
     try {
-      await _controller!.stopImageStream();
-      final XFile image = await _controller!.takePicture();
+      await _controller!.stopImageStream(); // 停止摄像头
 
       if (widget.referencePath == null) {
-        if (mounted) Navigator.pop(context, image);
+        if (mounted) Navigator.pop(context, _tempCapturedImage);
         return;
       }
 
-      VerifyResult result = await _faceService.compareFacesDetailed(widget.referencePath!, image);
+      // 验证刚才抓拍的正脸图片
+      VerifyResult result = await _faceService.compareFacesDetailed(widget.referencePath!, _tempCapturedImage!);
 
       if (!mounted) return;
 
       if (result.verified) {
-        Navigator.pop(context, image);
+        Navigator.pop(context, _tempCapturedImage); // 验证成功，返回最开始拍的清晰正脸照
       } else {
         setState(() {
           _statusText = 'camera.failed'.tr();
@@ -237,7 +253,7 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
       }
 
     } catch (e) {
-      debugPrint("Capture error: $e");
+      debugPrint("Verification error: $e");
       _resetCamera();
     }
   }
@@ -266,8 +282,9 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
     if (!mounted) return;
     setState(() {
       _hasCaptured = false;
+      _isVerifying = false;
       _step = 0;
-      _eyesPreviouslyClosed = false;
+      _tempCapturedImage = null; // 清空暂存的图片
       _statusText = 'camera.align'.tr();
       _statusColor = Colors.white;
     });
@@ -394,7 +411,8 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: _step == 1 ? Colors.yellowAccent : (_step == 2 ? Colors.greenAccent : Colors.white), 
+                  // 白 (准备) -> 绿 (已抓拍，准备摇头) -> 蓝 (正在处理)
+                  color: _step == 0 ? Colors.white : (_step == 1 ? Colors.greenAccent : Colors.blueAccent), 
                   width: 4
                 ),
               ),
@@ -406,8 +424,16 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
             left: 20, right: 20,
             child: Column(
               children: [
+                // 提示图标的变化
                 if (_step == 1)
-                  const Icon(Icons.remove_red_eye, color: Colors.yellowAccent, size: 40),
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.keyboard_double_arrow_left, color: Colors.greenAccent, size: 40),
+                      Icon(Icons.face, color: Colors.greenAccent, size: 40),
+                      Icon(Icons.keyboard_double_arrow_right, color: Colors.greenAccent, size: 40),
+                    ],
+                  ),
                 const SizedBox(height: 10),
                 Text(
                   _statusText,
@@ -423,7 +449,7 @@ class _FaceCameraViewState extends State<FaceCameraView> with WidgetsBindingObse
             ),
           ),
 
-          if (_hasCaptured || _isLoadingReference)
+          if (_isVerifying || _isLoadingReference)
             Container(
               color: Colors.black54,
               child: Center(
