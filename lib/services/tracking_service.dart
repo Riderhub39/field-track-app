@@ -33,11 +33,9 @@ class TrackingNotifier extends Notifier<bool> {
   }
 
   /// 🔄 恢复会话 (App 启动时由 main.dart 或首页调用)
-  /// 🟢 增强：即使是管理员手动在后台补录的状态，员工打开 App 也能检测并恢复
   Future<void> resumeTrackingSession(String authUid) async {
     debugPrint("🔄 Attempting to resume tracking session for $authUid...");
     
-    // 1. 检查今日状态
     final now = DateTime.now();
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
@@ -49,17 +47,28 @@ class TrackingNotifier extends Notifier<bool> {
           .get();
 
       if (attQuery.docs.isNotEmpty) {
-        final docs = attQuery.docs;
-        // 按时间排序找最后一次记录
-        docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
-        final lastSession = docs.last.data()['session'];
+        // 🟢 核心修改：过滤掉所有被管理员拒绝的打卡记录
+        final validDocs = attQuery.docs.where((doc) {
+          final status = doc.data()['verificationStatus'];
+          return status != 'Rejected' && status != 'Archived';
+        }).toList();
 
-        // 🟢 如果最后状态是上班中，且当前 Provider 显示未在追踪，则强制恢复
-        if ((lastSession == 'Clock In' || lastSession == 'Break In') && !state) {
-          debugPrint("✅ Last state was $lastSession. Auto-resuming GPS stream.");
-          await startTracking(authUid, isResume: true);
-        } else {
-          debugPrint("ℹ️ Tracking not required. Last state: $lastSession");
+        if (validDocs.isNotEmpty) {
+          // 按时间排序找最后一条“有效”记录
+          validDocs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
+          final lastSession = validDocs.last.data()['session'];
+
+          debugPrint("📍 Latest Valid State: $lastSession");
+
+          // 如果最后状态是上班中，且当前未在追踪，则强制恢复
+          if ((lastSession == 'Clock In' || lastSession == 'Break In') && !state) {
+            debugPrint("✅ Resuming tracking because status is $lastSession");
+            await startTracking(authUid, isResume: true);
+          } else if (state && (lastSession == 'Clock Out' || lastSession == 'Break Out')) {
+            // 如果最后有效状态是下班/休息，但追踪还在跑（比如刚刚被Reject），则停止
+            debugPrint("🛑 Suspending tracking because status is $lastSession");
+            await stopTracking();
+          }
         }
       }
     } catch (e) {
@@ -69,7 +78,7 @@ class TrackingNotifier extends Notifier<bool> {
 
   /// ▶️ 开始追踪
   Future<void> startTracking(String userId, {bool isResume = false}) async {
-    if (state && !isResume) return; // 如果已经在跑且不是恢复操作，直接跳过
+    if (state && !isResume) return; 
 
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -89,7 +98,7 @@ class TrackingNotifier extends Notifier<bool> {
           }
         } else { return; }
 
-        // 二次验证状态（双保险）
+        // 二次验证状态（排除 Rejected）
         final now = DateTime.now();
         final todayStr = DateFormat('yyyy-MM-dd').format(now);
         final attQuery = await FirebaseFirestore.instance
@@ -99,14 +108,21 @@ class TrackingNotifier extends Notifier<bool> {
             .get();
 
         if (attQuery.docs.isNotEmpty) {
-          final docs = attQuery.docs;
-          docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
-          final lastSession = docs.last.data()['session'];
+          // 🟢 同样过滤掉被拒绝的记录
+          final validDocs = attQuery.docs.where((doc) {
+            final status = doc.data()['verificationStatus'];
+            return status != 'Rejected' && status != 'Archived';
+          }).toList();
 
-          if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
-            debugPrint("🚫 Invalid state for tracking: $lastSession");
-            if (state) stopTracking();
-            return;
+          if (validDocs.isNotEmpty) {
+            validDocs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
+            final lastSession = validDocs.last.data()['session'];
+
+            if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
+              debugPrint("🚫 Invalid state for tracking: $lastSession");
+              if (state) stopTracking();
+              return;
+            }
           }
         }
       } catch (e) {
@@ -148,7 +164,7 @@ class TrackingNotifier extends Notifier<bool> {
                 latitude: savedLat, longitude: savedLng,
                 timestamp: DateTime.now(), accuracy: 0, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
               );
-              debugPrint("📍 Position stable (<150m). Reconnected silently.");
+              debugPrint("📍 Position stable (<150m).");
             }
           }
         }
@@ -161,7 +177,6 @@ class TrackingNotifier extends Notifier<bool> {
         debugPrint("Initial POS failed: $e");
       }
 
-      // 🟢 操作系统级后台保活配置
       late LocationSettings locationSettings;
       if (defaultTargetPlatform == TargetPlatform.android) {
         locationSettings = AndroidSettings(
@@ -237,7 +252,7 @@ class TrackingNotifier extends Notifier<bool> {
           "You have entered the work zone. Please remember to clock in."
         );
       } else if (_wasInsideOffice == true && !isInside) {
-        _checkIfForgotClockOut(); // 离开时检查是否忘打卡
+        _checkIfForgotClockOut(); 
         NotificationService().showGeofenceAlert(
           "Leaving the Office? 🚗", 
           "You are leaving the work zone. Don't forget to clock out if your shift is over."
