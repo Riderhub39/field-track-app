@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/biometric_service.dart';
+import '../services/auth_service.dart'; // 🟢 引入 AuthService 以便调用更新 DeviceID 的方法
 import '../screens/home_screen.dart';
 import 'register_screen.dart';
 
@@ -26,18 +27,18 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isObscured = true;
   bool _isLoading = false;
 
-  // 🟢 Rate Limiting Variables (State)
+  // Rate Limiting Variables (State)
   int _failedAttempts = 0;
   DateTime? _lockoutTime;
 
-  // 🟢 Constants for SharedPreferences keys
+  // Constants for SharedPreferences keys
   static const String _keyFailedAttempts = 'auth_failed_attempts';
   static const String _keyLockoutTime = 'auth_lockout_timestamp';
 
   @override
   void initState() {
     super.initState();
-    // 🟢 1. App 启动时立即加载本地的安全状态
+    // App 启动时立即加载本地的安全状态
     _loadSecurityState();
   }
 
@@ -49,7 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // 🟢 2. 新增：加载本地存储的安全状态
+  // 加载本地存储的安全状态
   Future<void> _loadSecurityState() async {
     final prefs = await SharedPreferences.getInstance();
     
@@ -79,7 +80,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // 🟢 3. 新增：登录成功，清除所有限制
+  // 登录成功，清除所有限制
   Future<void> _resetSecurityState() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyFailedAttempts);
@@ -90,7 +91,7 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
-  // 🟢 4. 新增：记录失败并判断是否锁定
+  // 记录失败并判断是否锁定
   Future<void> _recordLoginFailure() async {
     final prefs = await SharedPreferences.getInstance();
     
@@ -193,7 +194,7 @@ class _LoginScreenState extends State<LoginScreen> {
     // 1. Honeypot & Rate Limit Check
     if (_honeyPotController.text.isNotEmpty) return;
     
-    // 🟢 检查是否处于锁定状态
+    // 检查是否处于锁定状态
     if (_lockoutTime != null) {
       if (DateTime.now().isBefore(_lockoutTime!)) {
         final remaining = _lockoutTime!.difference(DateTime.now()).inMinutes;
@@ -244,6 +245,9 @@ class _LoginScreenState extends State<LoginScreen> {
       await _resetSecurityState();
       
       if (userCred.user != null) {
+        // 🟢 【新增】一旦 Firebase 验证成功，更新设备 ID 以踢出旧设备
+        await AuthService().updateDeviceIdOnLogin(userCred.user!.uid);
+
         QuerySnapshot statusQuery = await _db
             .collection('users')
             .where('authUid', isEqualTo: userCred.user!.uid)
@@ -262,7 +266,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
     } on FirebaseAuthException catch (e) {
-      // 🟢 Fix: Record failure to local storage
+      // Record failure to local storage
       await _recordLoginFailure();
 
       String message = "Login Failed";

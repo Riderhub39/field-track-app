@@ -7,7 +7,7 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
 import 'package:shared_preferences/shared_preferences.dart'; 
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 1. 引入 Riverpod
+import 'package:flutter_riverpod/flutter_riverpod.dart'; 
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/custom_profile_camera.dart';
 import 'camera_screen.dart';
@@ -17,11 +17,11 @@ import 'profile_screen.dart';
 import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
 import 'login_screen.dart'; 
-import '../services/tracking_service.dart'; // 包含 trackingProvider 和 TrackingNotifier
+import '../services/tracking_service.dart'; 
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart'; 
+import '../services/auth_service.dart'; // 🟢 1. 新增：引入 AuthService
 
-// 🟢 2. 将 StatefulWidget 改为 ConsumerStatefulWidget
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -29,18 +29,19 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-// 🟢 3. 将 State 改为 ConsumerState
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   String _staffName = "Staff";
   String? _faceIdPhotoPath;
 
   StreamSubscription? _announcementSubscription;
   StreamSubscription? _userStatusSubscription; 
+  StreamSubscription<bool>? _kickOutSubscription; // 🟢 2. 新增：设备互踢监听器
 
   @override
   void initState() {
     super.initState();
     _listenToUserStatus();
+    _startDeviceMonitoring(); // 🟢 3. 新增：启动设备监听
 
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
@@ -60,7 +61,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     _announcementSubscription?.cancel();
     _userStatusSubscription?.cancel(); 
+    _kickOutSubscription?.cancel(); // 🟢 4. 新增：释放资源时取消监听
     super.dispose();
+  }
+
+  // 🟢 5. 新增：监听设备 ID 变化的方法
+  // 🟢 5. 新增：监听设备 ID 变化的方法
+  void _startDeviceMonitoring() {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      _kickOutSubscription = AuthService().listenForDeviceKickOut(user.uid).listen((shouldKickOut) {
+        if (shouldKickOut) {
+          _kickOutSubscription?.cancel();
+          
+          // 🟢 修复警告：在异步回调中使用 context 前，必须检查 mounted
+          if (mounted) { 
+            AuthService().forceLogout(context);
+          }
+          
+        }
+      });
+    }
   }
 
   void _listenToUserStatus() {
@@ -110,8 +131,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _forceLogout(String reason) async {
     _userStatusSubscription?.cancel(); 
+    _kickOutSubscription?.cancel(); // 安全起见也取消踢人监听
     
-    // 🟢 4. 使用 Riverpod 的 ref 读取并停止追踪
     try {
       ref.read(trackingProvider.notifier).stopTracking(); 
     } catch (e) {
@@ -171,19 +192,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       final data = snapshot.docs.first.data();
       final String message = data['message'] ?? '';
-      final String title = data['title'] ?? 'settings.announcement_title'.tr(); // 🟢 读取新加的 title
-      final String? attachmentUrl = data['attachmentUrl']; // 🟢 读取新加的附件 URL
+      final String title = data['title'] ?? 'settings.announcement_title'.tr(); 
+      final String? attachmentUrl = data['attachmentUrl']; 
       final Timestamp? createdAt = data['createdAt'];
       
       if (createdAt == null || message.isEmpty) return;
 
       final prefs = await SharedPreferences.getInstance();
       
-      // 读取缓存。如果没有记录（第一次登录），则为 null
       int? lastShownTime = prefs.getInt('last_announcement_time');
 
       if (lastShownTime == null) {
-        // 防打扰机制：如果是全新安装，直接把当前时间设为基准点，不弹旧公告
         lastShownTime = DateTime.now().millisecondsSinceEpoch;
         await prefs.setInt('last_announcement_time', lastShownTime);
         return; 
@@ -202,7 +221,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   const Icon(Icons.campaign, color: Colors.orange),
                   const SizedBox(width: 10),
-                  // 🟢 动态显示标题
                   Expanded(
                     child: Text(
                       title, 
@@ -221,14 +239,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       message, 
                       style: const TextStyle(fontSize: 15),
                     ),
-                    // 🟢 如果有附件，在下方渲染出来
                     if (attachmentUrl != null && attachmentUrl.isNotEmpty) ...[
                       const SizedBox(height: 15),
                       const Divider(),
                       const SizedBox(height: 5),
                       InkWell(
                         onTap: () async {
-                          // 🟢 提前捕获 ScaffoldMessenger，完美解决 context 跨异步警告
                           final messenger = ScaffoldMessenger.of(context); 
                           final Uri url = Uri.parse(attachmentUrl);
                           if (await canLaunchUrl(url)) {
@@ -273,7 +289,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-  
   Future<void> _checkBiometricSetup() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -327,7 +342,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _checkAndResumeTracking() {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      // 🟢 5. 使用 Riverpod ref 恢复追踪
       ref.read(trackingProvider.notifier).resumeTrackingSession(user.uid);
     }
   }
