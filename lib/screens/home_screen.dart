@@ -1,14 +1,10 @@
-import 'dart:async';
 import 'dart:io';
-import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
-import 'package:shared_preferences/shared_preferences.dart'; 
-import 'package:flutter_riverpod/flutter_riverpod.dart'; 
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:easy_localization/easy_localization.dart';
 import 'package:url_launcher/url_launcher.dart';
+
 import '../widgets/custom_profile_camera.dart';
 import 'camera_screen.dart';
 import 'attendance_screen.dart';
@@ -17,135 +13,16 @@ import 'profile_screen.dart';
 import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
 import 'login_screen.dart'; 
-import '../services/tracking_service.dart'; 
-import '../services/notification_service.dart';
-import '../services/biometric_service.dart'; 
-import '../services/auth_service.dart'; // 🟢 1. 新增：引入 AuthService
 
-class HomeScreen extends ConsumerStatefulWidget {
+// 🟢 引入控制器
+import 'home_controller.dart'; 
+
+class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
-  @override
-  ConsumerState<HomeScreen> createState() => _HomeScreenState();
-}
+  // ========== UI Action Helpers ==========
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
-  String _staffName = "Staff";
-  String? _faceIdPhotoPath;
-
-  StreamSubscription? _announcementSubscription;
-  StreamSubscription? _userStatusSubscription; 
-  StreamSubscription<bool>? _kickOutSubscription; // 🟢 2. 新增：设备互踢监听器
-
-  @override
-  void initState() {
-    super.initState();
-    _listenToUserStatus();
-    _startDeviceMonitoring(); // 🟢 3. 新增：启动设备监听
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      NotificationService().startListeningToUserUpdates(user.uid);
-    }
-    
-    _listenForAnnouncements(); 
-
-    Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _checkAndResumeTracking();
-    });
-  }
-
-  @override
-  void dispose() {
-    _announcementSubscription?.cancel();
-    _userStatusSubscription?.cancel(); 
-    _kickOutSubscription?.cancel(); // 🟢 4. 新增：释放资源时取消监听
-    super.dispose();
-  }
-
-  // 🟢 5. 新增：监听设备 ID 变化的方法
-  // 🟢 5. 新增：监听设备 ID 变化的方法
-  void _startDeviceMonitoring() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      _kickOutSubscription = AuthService().listenForDeviceKickOut(user.uid).listen((shouldKickOut) {
-        if (shouldKickOut) {
-          _kickOutSubscription?.cancel();
-          
-          // 🟢 修复警告：在异步回调中使用 context 前，必须检查 mounted
-          if (mounted) { 
-            AuthService().forceLogout(context);
-          }
-          
-        }
-      });
-    }
-  }
-
-  void _listenToUserStatus() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    _userStatusSubscription = FirebaseFirestore.instance
-        .collection('users')
-        .where('authUid', isEqualTo: user.uid)
-        .limit(1)
-        .snapshots()
-        .listen((snapshot) async {
-      
-      if (snapshot.docs.isNotEmpty) {
-        final data = snapshot.docs.first.data();
-
-        final status = data['status'] ?? 'active';
-        if (status == 'disabled' || status == 'inactive') {
-          _forceLogout(status);
-          return;
-        }
-
-        if (mounted) {
-          setState(() {
-            final personal = data['personal'] as Map<String, dynamic>?;
-            if (personal != null) {
-              if (personal['shortName'] != null && personal['shortName'].toString().isNotEmpty) {
-                _staffName = personal['shortName'];
-              } else if (personal['name'] != null) {
-                _staffName = personal['name'];
-              }
-              _cacheUserName(_staffName);
-            }
-
-            if (data['faceIdPhoto'] != null) {
-              _faceIdPhotoPath = data['faceIdPhoto'];
-            }
-          });
-        }
-      } else {
-        _forceLogout('not_found');
-      }
-    }, onError: (error) {
-      debugPrint("Error listening to user status: $error");
-    });
-  }
-
-  Future<void> _forceLogout(String reason) async {
-    _userStatusSubscription?.cancel(); 
-    _kickOutSubscription?.cancel(); // 安全起见也取消踢人监听
-    
-    try {
-      ref.read(trackingProvider.notifier).stopTracking(); 
-    } catch (e) {
-      debugPrint("Error stopping tracking on force logout: $e");
-    }
-    
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
-
-    await FirebaseAuth.instance.signOut();
-
-    if (!mounted) return;
-
+  void _showLogoutDialog(BuildContext context, String reason, WidgetRef ref) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -159,9 +36,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ],
         ),
         content: Text(
-          reason == 'disabled' 
-            ? "Your account has been disabled by the administrator."
-            : "Your account credentials have been reset or removed. Please contact HR or log in again.",
+          reason == 'kicked_out'
+            ? "Your account was logged in from another device."
+            : (reason == 'disabled' 
+                ? "Your account has been disabled by the administrator."
+                : "Your account credentials have been reset or removed. Please contact HR or log in again."),
           style: const TextStyle(fontSize: 15),
         ),
         actions: [
@@ -169,6 +48,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
             onPressed: () {
               Navigator.of(ctx).pop();
+              ref.read(homeProvider.notifier).resetLogoutDialog();
               Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (context) => const LoginScreen()),
                 (route) => false,
@@ -181,127 +61,80 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
- void _listenForAnnouncements() {
-    _announcementSubscription = FirebaseFirestore.instance
-        .collection('announcements')
-        .orderBy('createdAt', descending: true)
-        .limit(1)
-        .snapshots()
-        .listen((snapshot) async {
-      if (snapshot.docs.isEmpty) return;
+  void _showAnnouncementDialog(BuildContext context, Map<String, dynamic> data, WidgetRef ref) {
+    final String title = data['title'] ?? 'settings.announcement_title'.tr(); 
+    final String message = data['message'] ?? '';
+    final String? attachmentUrl = data['attachmentUrl']; 
 
-      final data = snapshot.docs.first.data();
-      final String message = data['message'] ?? '';
-      final String title = data['title'] ?? 'settings.announcement_title'.tr(); 
-      final String? attachmentUrl = data['attachmentUrl']; 
-      final Timestamp? createdAt = data['createdAt'];
-      
-      if (createdAt == null || message.isEmpty) return;
-
-      final prefs = await SharedPreferences.getInstance();
-      
-      int? lastShownTime = prefs.getInt('last_announcement_time');
-
-      if (lastShownTime == null) {
-        lastShownTime = DateTime.now().millisecondsSinceEpoch;
-        await prefs.setInt('last_announcement_time', lastShownTime);
-        return; 
-      }
-      
-      if (createdAt.millisecondsSinceEpoch > lastShownTime) {
-        
-        await prefs.setInt('last_announcement_time', createdAt.millisecondsSinceEpoch);
-        
-        if (mounted) {
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-              title: Row(
-                children: [
-                  const Icon(Icons.campaign, color: Colors.orange),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      title, 
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      overflow: TextOverflow.ellipsis,
-                    )
-                  ), 
-                ],
-              ),
-              content: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      message, 
-                      style: const TextStyle(fontSize: 15),
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title: Row(
+          children: [
+            const Icon(Icons.campaign, color: Colors.orange),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title, 
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                overflow: TextOverflow.ellipsis,
+              )
+            ), 
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(message, style: const TextStyle(fontSize: 15)),
+              if (attachmentUrl != null && attachmentUrl.isNotEmpty) ...[
+                const SizedBox(height: 15),
+                const Divider(),
+                const SizedBox(height: 5),
+                InkWell(
+                  onTap: () async {
+                    final Uri url = Uri.parse(attachmentUrl);
+                    if (await canLaunchUrl(url)) {
+                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                    }
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.withValues(alpha:0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.blue.withValues(alpha:0.3))
                     ),
-                    if (attachmentUrl != null && attachmentUrl.isNotEmpty) ...[
-                      const SizedBox(height: 15),
-                      const Divider(),
-                      const SizedBox(height: 5),
-                      InkWell(
-                        onTap: () async {
-                          final messenger = ScaffoldMessenger.of(context); 
-                          final Uri url = Uri.parse(attachmentUrl);
-                          if (await canLaunchUrl(url)) {
-                            await launchUrl(url, mode: LaunchMode.externalApplication);
-                          } else {
-                            messenger.showSnackBar(
-                              const SnackBar(content: Text('Could not open attachment.'))
-                            );
-                          }
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.blue.withValues(alpha:0.1),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.blue.withValues(alpha:0.3))
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.attach_file, color: Colors.blue, size: 18),
-                              SizedBox(width: 8),
-                              Text("View Attachment", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13)),
-                            ],
-                          ),
-                        ),
-                      )
-                    ]
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text("OK", style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
-            ),
-          );
-        }
-      }
-    });
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.attach_file, color: Colors.blue, size: 18),
+                        SizedBox(width: 8),
+                        Text("View Attachment", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold, fontSize: 13)),
+                      ],
+                    ),
+                  ),
+                )
+              ]
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              ref.read(homeProvider.notifier).resetAnnouncementDialog();
+            },
+            child: const Text("OK", style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
   }
 
-  Future<void> _checkBiometricSetup() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    bool hasAsked = prefs.getBool('has_asked_biometrics') ?? false; 
-    bool isEnabled = prefs.getBool('biometric_enabled') ?? false;   
-
-    if (hasAsked || isEnabled) return;
-
-    bool isHardwareSupported = await BiometricService().isDeviceSupported();
-    if (!isHardwareSupported) return; 
-
-    if (!mounted) return;
-
+  void _showBiometricDialog(BuildContext context, WidgetRef ref) {
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -310,27 +143,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         content: Text('login.ask_biometric_desc'.tr()), 
         actions: [
           TextButton(
-            onPressed: () async {
-              await prefs.setBool('has_asked_biometrics', true);
-              if (ctx.mounted) Navigator.pop(ctx);
+            onPressed: () {
+              ref.read(homeProvider.notifier).setBiometricLater();
+              Navigator.pop(ctx);
             },
             child: Text('login.btn_later'.tr(), style: const TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
-            onPressed: () async {
+            onPressed: () {
               Navigator.pop(ctx); 
-              bool success = await BiometricService().authenticateStaff();
-
-              if (success) {
-                await prefs.setBool('biometric_enabled', true);
-                await prefs.setBool('has_asked_biometrics', true);
-
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('settings.biometric_on_msg'.tr()), backgroundColor: Colors.green)
-                  );
-                }
-              }
+              ref.read(homeProvider.notifier).enableBiometric();
             },
             child: Text('login.btn_enable'.tr()),
           ),
@@ -339,88 +161,62 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _checkAndResumeTracking() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      ref.read(trackingProvider.notifier).resumeTrackingSession(user.uid);
-    }
-  }
-
-  Future<void> _cacheUserName(String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('cached_staff_name', name);
-  }
-
-  Future<void> _openCustomCamera() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
+  Future<void> _openCustomCamera(BuildContext context, WidgetRef ref) async {
     final XFile? photo = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const CustomProfileCamera()),
     );
 
-    if (photo == null) return;
+    // 🟢 核心修复：在 await 之后使用 context 前，必须检查 context.mounted
+    if (!context.mounted) return;
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('home.msg_uploading'.tr()))
-      );
-    }
-
-    try {
-      final String fileName = 'face_id_${user.uid}.jpg';
-      final Reference storageRef = FirebaseStorage.instance
-          .ref()
-          .child('user_faces')
-          .child(fileName);
-
-      await storageRef.putFile(File(photo.path));
-      final String downloadUrl = await storageRef.getDownloadURL();
-
-      final q = await FirebaseFirestore.instance
-          .collection('users')
-          .where('authUid', isEqualTo: user.uid)
-          .limit(1)
-          .get();
-
-      if (q.docs.isNotEmpty) {
-        await q.docs.first.reference.update({
-          'faceIdPhoto': downloadUrl,
-          'hasFaceId': true,
-          'lastFaceUpdate': FieldValue.serverTimestamp(),
-        });
-
-        if (mounted) {
-          setState(() {
-            _faceIdPhotoPath = downloadUrl;
-          });
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('profile.save_success'.tr()),
-              backgroundColor: Colors.green,
-            )
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint("Error updating photo: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("${'home.msg_upload_fail'.tr()}: $e"), backgroundColor: Colors.red)
-        );
-      }
+    if (photo != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('home.msg_uploading'.tr())));
+      ref.read(homeProvider.notifier).uploadProfilePhoto(photo);
     }
   }
 
+  // ========== Widget Build ==========
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(homeProvider);
+
+    // 🟢 统一的弹窗/Toast 事件监听中心
+    ref.listen<HomeState>(homeProvider, (previous, next) {
+      // 被踢下线或账号禁用
+      if (next.shouldShowLogoutDialog && !(previous?.shouldShowLogoutDialog ?? false)) {
+        _showLogoutDialog(context, next.logoutReason, ref);
+      }
+      
+      // 显示新公告
+      if (next.shouldShowAnnouncement && !(previous?.shouldShowAnnouncement ?? false)) {
+         _showAnnouncementDialog(context, next.announcementData!, ref);
+      }
+
+      // 询问是否开启指纹
+      if (next.shouldShowBiometricPrompt && !(previous?.shouldShowBiometricPrompt ?? false)) {
+        _showBiometricDialog(context, ref);
+      }
+
+      // 常规错误或成功提示
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!.tr()), backgroundColor: Colors.red));
+        ref.read(homeProvider.notifier).clearMessages();
+      }
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!.tr()), backgroundColor: Colors.green));
+        ref.read(homeProvider.notifier).clearMessages();
+      }
+    });
+
+    // 解析头像
     ImageProvider? profileImage;
-    if (_faceIdPhotoPath != null && _faceIdPhotoPath!.isNotEmpty) {
-      if (_faceIdPhotoPath!.startsWith('http')) {
-        profileImage = NetworkImage(_faceIdPhotoPath!);
+    if (state.faceIdPhotoPath != null && state.faceIdPhotoPath!.isNotEmpty) {
+      if (state.faceIdPhotoPath!.startsWith('http')) {
+        profileImage = NetworkImage(state.faceIdPhotoPath!);
       } else {
-        final file = File(_faceIdPhotoPath!);
+        final file = File(state.faceIdPhotoPath!);
         if (file.existsSync()) {
           profileImage = FileImage(file);
         }
@@ -438,7 +234,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
             child: GestureDetector(
-              onTap: _openCustomCamera,
+              onTap: () => _openCustomCamera(context, ref),
               child: Container(
                 margin: const EdgeInsets.all(8),
                 decoration: BoxDecoration(
@@ -471,6 +267,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 顶部信息卡片
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(24),
@@ -489,7 +286,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   children: [
                     Text('home.welcome'.tr(), style: const TextStyle(color: Colors.white70)),
                     Text(
-                      _staffName,
+                      state.staffName,
                       style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)
                     ),
                   ],
@@ -503,6 +300,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             child: Text('home.menu_main'.tr(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           ),
 
+          // 主菜单网格
           Expanded(
             child: GridView.count(
               crossAxisCount: 2,
@@ -517,13 +315,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Colors.orange,
                   isEnabled: true,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const AttendanceScreen())
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const AttendanceScreen()));
                   },
                 ),
-
                 _buildMenuCard(
                   context,
                   'home.apply_leave'.tr(),
@@ -531,13 +325,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Colors.green,
                   isEnabled: true,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const LeaveApplicationScreen())
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const LeaveApplicationScreen()));
                   },
                 ),
-
                 _buildMenuCard(
                   context,
                   'home.smart_cam'.tr(),
@@ -545,13 +335,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Colors.blue,
                   isEnabled: true,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const CameraScreen())
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const CameraScreen()));
                   },
                 ),
-
                 _buildMenuCard(
                   context,
                   'home.payslip'.tr(),
@@ -559,13 +345,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Colors.pink,
                   isEnabled: true,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const PayslipScreen())
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const PayslipScreen()));
                   },
                 ),
-
                 _buildMenuCard(
                   context,
                   'home.profile'.tr(),
@@ -573,13 +355,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Colors.purple,
                   isEnabled: true,
                   onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const ProfileScreen())
-                    );
+                    Navigator.push(context, MaterialPageRoute(builder: (context) => const ProfileScreen()));
                   },
                 ),
-
               ],
             ),
           ),

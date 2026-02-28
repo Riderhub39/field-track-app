@@ -3,83 +3,25 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:camera/camera.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:network_info_plus/network_info_plus.dart'; 
 import 'package:flutter_riverpod/flutter_riverpod.dart'; 
 
 import '../widgets/shimmer_loading.dart';
 import '../widgets/face_camera_view.dart';
 import 'correction_request_screen.dart';
-import '../services/tracking_service.dart'; 
-import '../services/notification_service.dart'; // 🟢 引入以进行 Token 绑定
 
-class AttendanceScreen extends StatefulWidget {
+// 🟢 引入控制器
+import 'attendance_controller.dart'; 
+
+class AttendanceScreen extends ConsumerWidget {
   const AttendanceScreen({super.key});
 
   @override
-  State<AttendanceScreen> createState() => _AttendanceScreenState();
-}
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(attendanceProvider);
 
-class _AttendanceScreenState extends State<AttendanceScreen> {
-  ImageProvider? _appBarImage;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadUserProfile();
-    _autoBindFCM(); // 🟢 自动绑定推送 Token
-  }
-
-  Future<void> _autoBindFCM() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      await NotificationService().bindFCMToken(user.uid);
-    }
-  }
-
-  Future<void> _loadUserProfile() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    try {
-      final q = await FirebaseFirestore.instance
-          .collection('users')
-          .where('authUid', isEqualTo: user.uid)
-          .limit(1)
-          .get();
-
-      if (q.docs.isNotEmpty && mounted) {
-        final data = q.docs.first.data();
-        final faceUrl = data['faceIdPhoto']?.toString();
-
-        if (faceUrl != null && faceUrl.isNotEmpty) {
-          if (faceUrl.startsWith('http')) {
-            setState(() {
-              _appBarImage = NetworkImage(faceUrl);
-            });
-          } else {
-            final file = File(faceUrl);
-            if (file.existsSync()) {
-              setState(() {
-                _appBarImage = FileImage(file);
-              });
-            }
-          }
-        }
-      }
-    } catch (e) {
-      // Error handling silently
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
     return DefaultTabController(
       length: 4,
       child: Scaffold(
@@ -94,8 +36,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: CircleAvatar(
                 radius: 16,
                 backgroundColor: Colors.grey.shade300,
-                backgroundImage: _appBarImage,
-                child: _appBarImage == null
+                backgroundImage: state.appBarImage,
+                child: state.appBarImage == null
                     ? const Icon(Icons.person, color: Colors.grey, size: 20)
                     : null,
               ),
@@ -133,6 +75,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 }
 
+// ==========================================
+//  Tab 1: Action Tab
+// ==========================================
 class AttendanceActionTab extends ConsumerStatefulWidget {
   const AttendanceActionTab({super.key});
   @override
@@ -140,614 +85,42 @@ class AttendanceActionTab extends ConsumerStatefulWidget {
 }
 
 class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
-  bool _isLoading = false;
-  bool _isProcessingAction = false; 
-  String _staffName = "Staff";
-  String _employeeId = "";
-  
-  String _currentAddress = "att.locating".tr(); // 🟢 已多语言化
-  Timer? _timer;
-  
-  String? _referenceFaceIdPath; 
-  XFile? _capturedPhoto;
-  String _selectedAction = "Clock In"; 
-
   final Completer<GoogleMapController> _mapController = Completer();
-  CameraPosition? _initialPosition;
-  Set<Marker> _markers = {};
-
-  // 🟢 今日打卡预览状态
-  String _todayInTime = "--:--";
-  String _todayOutTime = "--:--";
-  StreamSubscription? _attendanceSubscription;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchUserDataAndFaceId(); 
-    _initLocation();
-    _listenToTodayAttendance(); // 🟢 开始实时监听
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _attendanceSubscription?.cancel();
-    super.dispose();
-  }
-
-  // 🟢 实时更新今日打卡时间
-  void _listenToTodayAttendance() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
-
-    _attendanceSubscription = FirebaseFirestore.instance
-        .collection('attendance')
-        .where('uid', isEqualTo: user.uid)
-        .where('date', isEqualTo: todayStr)
-        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
-        .snapshots()
-        .listen((snapshot) {
-      if (mounted) {
-        String inT = "--:--";
-        String outT = "--:--";
-        final docs = snapshot.docs;
-        docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
-
-        for (var doc in docs) {
-          final data = doc.data();
-          final ts = (data['timestamp'] as Timestamp).toDate();
-          final formatted = DateFormat('HH:mm').format(ts);
-          if (data['session'] == 'Clock In') inT = formatted;
-          if (data['session'] == 'Clock Out') outT = formatted;
-        }
-        setState(() {
-          _todayInTime = inT;
-          _todayOutTime = outT;
-        });
-      }
-    });
-  }
-
-  Future<void> _fetchUserDataAndFaceId() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    try {
-      final q = await FirebaseFirestore.instance
-          .collection('users')
-          .where('authUid', isEqualTo: user.uid)
-          .limit(1)
-          .get();
-      if (q.docs.isNotEmpty && mounted) {
-        final data = q.docs.first.data();
-        
-        setState(() {
-          _staffName = data['personal']['name'] ?? "Staff";
-          if (data['personal'] != null && data['personal']['empCode'] != null) {
-            _employeeId = "(${data['personal']['empCode']})";
-          }
-        });
-
-        final faceUrl = data['faceIdPhoto']?.toString();
-        if (faceUrl != null) {
-          if (faceUrl.startsWith('http')) {
-             _downloadFaceImage(faceUrl);
-          } else {
-             setState(() => _referenceFaceIdPath = faceUrl);
-          }
-        }
-      }
-    } catch (e) {
-      // Error handling silently
-    }
-  }
-
-  Future<void> _downloadFaceImage(String url) async {
-    try {
-      final response = await http.get(Uri.parse(url));
-      if (response.statusCode == 200) {
-        final tempDir = await getTemporaryDirectory();
-        final tempFile = File('${tempDir.path}/face_id_ref.jpg');
-        await tempFile.writeAsBytes(response.bodyBytes);
-        if (mounted) {
-          setState(() => _referenceFaceIdPath = tempFile.path);
-        }
-      }
-    } catch (e) {
-      // Error handling silently
-    }
-  }
-
-  Future<void> _initLocation() async {
-    try {
-      Position? pos = await _determinePosition();
-      if (pos != null) {
-        final latLng = LatLng(pos.latitude, pos.longitude);
-        setState(() {
-          _initialPosition = CameraPosition(target: latLng, zoom: 15);
-          _markers = {
-            Marker(markerId: const MarkerId('current'), position: latLng)
-          };
-        });
-        if (mounted) await _getAddressFromLatLng(pos);
-      }
-    } catch (e) {
-      if (mounted) setState(() => _currentAddress = "att.location_error".tr());
-    }
-  }
-
-  Future<void> _getAddressFromLatLng(Position position) async {
-    try {
-      List<Placemark> placemarks =
-          await placemarkFromCoordinates(position.latitude, position.longitude);
-      
-      if (placemarks.isNotEmpty && mounted) {
-        Placemark place = placemarks[0];
-        
-        List<String> parts = [
-          place.name ?? "",
-          place.subThoroughfare ?? "",
-          place.thoroughfare ?? "",
-          place.subLocality ?? "",
-          place.locality ?? "",
-          place.postalCode ?? "",
-          place.administrativeArea ?? "",
-          place.country ?? ""
-        ];
-
-        String detailedAddress = parts
-            .where((p) => p.isNotEmpty)
-            .toSet() 
-            .join(", ");
-
-        setState(() => _currentAddress = detailedAddress);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _currentAddress =
-            "GPS: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}");
-      }
-    }
-  }
-
-  Future<Position?> _determinePosition() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return null;
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return null;
-    }
-    return await Geolocator.getCurrentPosition(
-        locationSettings:
-            const LocationSettings(accuracy: LocationAccuracy.high));
-  }
-
-  Future<bool> _validateRestrictions() async {
-    setState(() => _isLoading = true);
-    
-    try {
-      final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get();
-      if (!doc.exists) return true;
-      
-      final data = doc.data() as Map<String, dynamic>;
-      final double officeLat = (data['latitude'] as num).toDouble();
-      final double officeLng = (data['longitude'] as num).toDouble();
-      final double allowedRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
-
-      List<Map<String, String>> allowedWifiList = [];
-      if (data['allowedWifis'] is List) {
-        for (var item in data['allowedWifis']) {
-          if (item is String) {
-            allowedWifiList.add({'ssid': item, 'bssid': ''});
-          } else if (item is Map) {
-            allowedWifiList.add({
-              'ssid': item['ssid']?.toString() ?? '',
-              'bssid': item['bssid']?.toString().toLowerCase() ?? ''
-            });
-          }
-        }
-      } else if (data['wifiSSID'] is String) {
-        allowedWifiList.add({'ssid': data['wifiSSID'], 'bssid': ''});
-      }
-
-      if (allowedWifiList.isNotEmpty) {
-        final info = NetworkInfo();
-        String? currentSSID = await info.getWifiName();
-        String? currentBSSID = await info.getWifiBSSID(); 
-
-        if (currentSSID != null) currentSSID = currentSSID.replaceAll('"', '');
-        if (currentBSSID != null) currentBSSID = currentBSSID.toLowerCase();
-        if (currentBSSID == "02:00:00:00:00:00") currentBSSID = null;
-
-        bool isWifiValid = false;
-        for (var config in allowedWifiList) {
-          bool ssidMatch = config['ssid'] == currentSSID;
-          bool bssidMatch = true;
-          if (config['bssid'] != null && config['bssid']!.isNotEmpty) {
-             if (currentBSSID == null) {
-               throw "Unable to verify WiFi security.\nPlease enable GPS/Location permission.";
-             }
-             bssidMatch = config['bssid'] == currentBSSID;
-          }
-          if (ssidMatch && bssidMatch) {
-            isWifiValid = true;
-            break;
-          }
-        }
-
-        if (!isWifiValid) {
-           throw "Not connected to company WiFi.\nPlease connect to clock in.";
-        }
-      }
-
-      Position? currentPos = await _determinePosition();
-      if (currentPos == null) throw "Cannot determine GPS location.";
-
-      double distanceInMeters = Geolocator.distanceBetween(
-        currentPos.latitude,
-        currentPos.longitude,
-        officeLat,
-        officeLng,
-      );
-
-      if (distanceInMeters > allowedRadius) {
-        throw "You are outside office range.\nPlease move closer to clock in.";
-      }
-
-      return true;
-
-    } catch (e) {
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Access Denied"), 
-            content: Text(e.toString()),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
-          ),
-        );
-      }
-      return false;
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
- Future<void> _showActionPicker() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final now = DateTime.now();
-    final todayStr = DateFormat('yyyy-MM-dd').format(now);
-    
-    final q = await FirebaseFirestore.instance
-        .collection('attendance')
-        .where('uid', isEqualTo: user.uid)
-        .where('date', isEqualTo: todayStr)
-        .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
-        .get();
-
-    bool hasAnyRecord = q.docs.isNotEmpty; 
-    String? lastSession;
-    bool hasClockedOut = false;
-    DateTime? lastPunchTime;
-
-    if (hasAnyRecord) {
-      final docs = q.docs;
-      docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
-      final last = docs.last;
-      
-      lastSession = last['session'];
-      lastPunchTime = (last['timestamp'] as Timestamp).toDate(); 
-      hasClockedOut = docs.any((doc) => doc['session'] == 'Clock Out');
-    }
-
-    if (!mounted) return;
-
-    if (lastPunchTime != null) {
-      final difference = now.difference(lastPunchTime);
-      if (difference.inMinutes < 30) {
-        final waitMinutes = 30 - difference.inMinutes;
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Row(
-              children: [
-                Icon(Icons.timer, color: Colors.orange),
-                SizedBox(width: 10),
-                Text("Action Locked"),
-              ],
-            ),
-            content: Text("Please wait $waitMinutes more minutes before your next action to prevent duplicate records."),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text("OK"),
-              )
-            ],
-          ),
-        );
-        return; 
-      }
-    }
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true, 
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) {
-        return Container(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text("att.select_action".tr(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 20),
-              
-              _buildActionTile(
-                title: "att.act_clock_in".tr(),
-                subtitle: hasAnyRecord 
-                    ? "att.sub_locked_submitted".tr() 
-                    : "att.sub_start_shift".tr(),
-                icon: Icons.login,
-                color: Colors.green,
-                isLocked: hasAnyRecord, 
-                onTap: () => _handleAction("Clock In"),
-              ),
-              
-              const Divider(),
-
-              _buildActionTile(
-                title: "att.act_break_out".tr(),
-                subtitle: hasClockedOut 
-                    ? "Shift Ended" 
-                    : ((lastSession == 'Break Out') ? "att.sub_locked_verified".tr() : "att.sub_lunch".tr()),
-                icon: Icons.coffee,
-                color: Colors.orange,
-                isLocked: !hasAnyRecord || (lastSession == 'Break Out') || hasClockedOut,
-                onTap: () => _handleAction("Break Out"),
-              ),
-
-              _buildActionTile(
-                title: "att.act_break_in".tr(),
-                subtitle: hasClockedOut 
-                    ? "Shift Ended" 
-                    : ((lastSession == 'Break In') ? "att.sub_locked_verified".tr() : "att.sub_back_work".tr()),
-                icon: Icons.work_history,
-                color: Colors.blue,
-                isLocked: !hasAnyRecord || (lastSession == 'Break In') || hasClockedOut || (lastSession != 'Break Out'),
-                onTap: () => _handleAction("Break In"),
-              ),
-
-              const Divider(),
-
-              _buildActionTile(
-                title: "att.act_clock_out".tr(),
-                subtitle: hasClockedOut ? "att.sub_locked_verified".tr() : "att.sub_end_shift".tr(),
-                icon: Icons.logout,
-                color: Colors.red,
-                isLocked: !hasAnyRecord || hasClockedOut,
-                onTap: () => _handleAction("Clock Out"),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  Widget _buildActionTile({
-    required String title, 
-    required String subtitle, 
-    required IconData icon, 
-    required Color color, 
-    required bool isLocked,
-    required VoidCallback onTap
-  }) {
-    return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: isLocked ? Colors.grey : color, 
-        child: Icon(isLocked ? Icons.lock : icon, color: Colors.white)
-      ),
-      title: Text(
-        title, 
-        style: TextStyle(
-          color: isLocked ? Colors.grey : Colors.black,
-          decoration: isLocked ? TextDecoration.lineThrough : null
-        )
-      ),
-      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-      onTap: isLocked ? null : onTap,
-      enabled: !isLocked,
-    );
-  }
-
-  void _handleAction(String action) async {
-    Navigator.pop(context); 
-    bool isAllowed = await _validateRestrictions();
-    if (!isAllowed) return; 
-
-    setState(() => _selectedAction = action);
-    _takePhoto(); 
-  }
-
-  Future<void> _takePhoto() async {
-    if (_referenceFaceIdPath == null) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("att.err_no_face_id".tr())));
-      return;
-    }
-
-    final result = await Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (context) =>
-                FaceCameraView(referencePath: _referenceFaceIdPath))); 
-
-    if (result != null && result is XFile && mounted) {
-      setState(() {
-        _capturedPhoto = result;
-      });
-      String actionDisplay = _getActionDisplayText(_selectedAction);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text("att.msg_photo_captured".tr(args: [actionDisplay])),
-          backgroundColor: Colors.green));
-    }
-  }
-
-  String _getActionDisplayText(String action) {
-    if(action == "Clock In") return "att.act_clock_in".tr();
-    if(action == "Break Out") return "att.act_break_out".tr();
-    if(action == "Break In") return "att.act_break_in".tr();
-    if(action == "Clock Out") return "att.act_clock_out".tr();
-    return action;
-  }
-
-  Future<void> _submitAttendance() async {
-    if (_capturedPhoto == null) return;
-    if (_isProcessingAction) return; 
-
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    setState(() {
-      _isProcessingAction = true; 
-    });
-
-    final XFile photoFile = _capturedPhoto!;
-    final String action = _selectedAction;
-    final DateTime actionTime = DateTime.now(); 
-    final String uid = user.uid;
-    final String email = user.email ?? "";
-    final String name = _staffName;
-
-    setState(() {
-      _capturedPhoto = null;
-      _isLoading = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text("att.msg_queueing".tr(args: [_getActionDisplayText(action)])),
-      backgroundColor: Colors.blue,
-      duration: const Duration(seconds: 2),
-    ));
-
-    await _processUpload(
-      uid: uid,
-      email: email,
-      name: name,
-      file: photoFile,
-      action: action,
-      timestamp: actionTime,
-    );
-    
-    if (mounted) {
-      setState(() {
-        _isProcessingAction = false;
-      });
-    }
-  }
-
-  Future<void> _processUpload({
-    required String uid,
-    required String email,
-    required String name,
-    required XFile file,
-    required String action,
-    required DateTime timestamp,
-  }) async {
-    try {
-      Position? position = await _determinePosition();
-      if (position == null) throw "GPS Signal Lost";
-
-      String addressStr = await _fetchAddressString(position);
-
-      String fileName = '${timestamp.millisecondsSinceEpoch}.jpg';
-      Reference storageRef = FirebaseStorage.instance
-          .ref()
-          .child('attendance_photos')
-          .child(uid)
-          .child(fileName);
-      
-      await storageRef.putFile(File(file.path));
-      String photoUrl = await storageRef.getDownloadURL();
-
-      final todayStr = DateFormat('yyyy-MM-dd').format(timestamp);
-      
-      Map<String, dynamic> newRecord = {
-        'uid': uid,
-        'name': name,
-        'email': email,
-        'date': todayStr,
-        'verificationStatus': "Pending", 
-        'session': action, 
-        'location': GeoPoint(position.latitude, position.longitude),
-        'address': addressStr,
-        'photoUrl': photoUrl, 
-        'timestamp': Timestamp.fromDate(timestamp), 
-      };
-
-      await FirebaseFirestore.instance.collection('attendance').add(newRecord);
-
-      if (action == 'Clock In') {
-        ref.read(trackingProvider.notifier).startTracking(uid);
-      } else if (action == 'Break Out') {
-        ref.read(trackingProvider.notifier).stopTracking();
-      } else if (action == 'Break In') {
-        ref.read(trackingProvider.notifier).startTracking(uid);
-      } else if (action == 'Clock Out') {
-        ref.read(trackingProvider.notifier).stopTracking();
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("att.msg_success".tr()), 
-            backgroundColor: Colors.green));
-      }
-
-    } catch (e) {
-      debugPrint("Upload failed: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Upload Failed. Please check your connection or try again later."), 
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-  
-  Future<String> _fetchAddressString(Position position) async {
-    try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
-      if (placemarks.isNotEmpty) {
-        Placemark place = placemarks[0];
-        List<String> parts = [
-          place.name ?? "", place.subThoroughfare ?? "", place.thoroughfare ?? "",
-          place.subLocality ?? "", place.locality ?? "", place.postalCode ?? "",
-          place.administrativeArea ?? "", place.country ?? ""
-        ];
-        return parts.where((p) => p.isNotEmpty).toSet().join(", ");
-      }
-    } catch (e) { /* ignore */ }
-    return "GPS: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}";
-  }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) return const Center(child: CircularProgressIndicator());
+    final state = ref.watch(attendanceProvider);
+
+    // 🟢 统一的异常与成功弹窗监听
+    ref.listen<AttendanceState>(attendanceProvider, (previous, next) {
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text("Notice"), 
+            content: Text(next.errorMessage!),
+            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+          ),
+        );
+        ref.read(attendanceProvider.notifier).clearMessages();
+      }
+
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green));
+        ref.read(attendanceProvider.notifier).clearMessages();
+      }
+    });
+
+    if (state.isFetchingUser || state.isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
 
     final now = DateTime.now();
-    // 🟢 应用 Locale 到日期格式化
     final displayDate = DateFormat('dd/MM/yyyy (EEE)', context.locale.languageCode).format(now);
     const whiteTextColor = Color(0xFFFFFFFF);
     const naviColor = Color(0xFF15438c);
 
-    String actionDisplay = _getActionDisplayText(_selectedAction);
+    String actionDisplay = _getActionDisplayText(state.selectedAction);
 
     return SingleChildScrollView(
       child: Column(
@@ -758,12 +131,12 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
               SizedBox(
                 height: 180,
                 width: double.infinity,
-                child: _initialPosition == null
+                child: state.initialPosition == null
                     ? Container(color: Colors.grey[300], child: const Center(child: CircularProgressIndicator()))
                     : GoogleMap(
                         mapType: MapType.normal,
-                        initialCameraPosition: _initialPosition!,
-                        markers: _markers,
+                        initialCameraPosition: state.initialPosition!,
+                        markers: state.markers,
                         myLocationEnabled: true,
                         zoomControlsEnabled: false,
                         onMapCreated: (GoogleMapController controller) {
@@ -786,7 +159,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        _currentAddress,
+                        state.currentAddress.tr(),
                         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
@@ -823,42 +196,42 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                 ),
                 const SizedBox(height: 20),
 
-                Text(_staffName, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: whiteTextColor)),
-                Text(_employeeId, style: const TextStyle(fontSize: 16, color: Colors.white)),
+                Text(state.staffName, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: whiteTextColor)),
+                Text(state.employeeId, style: const TextStyle(fontSize: 16, color: Colors.white)),
 
                 const SizedBox(height: 20),
                 const Divider(color: Colors.white54),
                 const SizedBox(height: 15),
 
-                // 🟢 今日打卡预览 (Time Boxes)
+                // 今日打卡预览
                 Row(
                   children: [
-                    Expanded(child: _buildActionTimeBox("att.label_in".tr(), _todayInTime)),
+                    Expanded(child: _buildActionTimeBox("att.label_in".tr(), state.todayInTime)),
                     const SizedBox(width: 12),
-                    Expanded(child: _buildActionTimeBox("att.label_out".tr(), _todayOutTime)),
+                    Expanded(child: _buildActionTimeBox("att.label_out".tr(), state.todayOutTime)),
                   ],
                 ),
 
                 const SizedBox(height: 30),
 
                 GestureDetector(
-                  onTap: _isProcessingAction ? null : _showActionPicker,
+                  onTap: state.isProcessingAction ? null : () => _showActionPicker(state),
                   child: Container(
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: _isProcessingAction ? Colors.grey : Colors.amber,
+                      color: state.isProcessingAction ? Colors.grey : Colors.amber,
                       borderRadius: BorderRadius.circular(16),
                       boxShadow: [
-                        if (!_isProcessingAction)
+                        if (!state.isProcessingAction)
                           BoxShadow(color: Colors.amber.withValues(alpha: 0.3), blurRadius: 10, offset: const Offset(0, 5))
                       ],
-                      image: _capturedPhoto != null
-                          ? DecorationImage(image: FileImage(File(_capturedPhoto!.path)), fit: BoxFit.cover)
+                      image: state.capturedPhoto != null
+                          ? DecorationImage(image: FileImage(File(state.capturedPhoto!.path)), fit: BoxFit.cover)
                           : null,
                     ),
-                    child: _capturedPhoto == null
-                        ? (_isProcessingAction 
+                    child: state.capturedPhoto == null
+                        ? (state.isProcessingAction 
                             ? const Padding(padding: EdgeInsets.all(20.0), child: CircularProgressIndicator(color: Colors.white))
                             : const Icon(Icons.camera_alt_rounded, color: Colors.white, size: 40))
                         : null,
@@ -867,7 +240,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 
                 const SizedBox(height: 20),
                 
-                if (_capturedPhoto == null && !_isProcessingAction)
+                if (state.capturedPhoto == null && !state.isProcessingAction)
                   Text("att.hint_tap_camera".tr(), style: const TextStyle(color: Colors.white70, fontSize: 12)),
 
                 const SizedBox(height: 20),
@@ -878,12 +251,12 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      backgroundColor: (_capturedPhoto != null && !_isProcessingAction) ? whiteTextColor : Colors.grey.shade300,
-                      foregroundColor: (_capturedPhoto != null && !_isProcessingAction) ? naviColor : Colors.grey.shade500,
-                      elevation: (_capturedPhoto != null && !_isProcessingAction) ? 3 : 0,
+                      backgroundColor: (state.capturedPhoto != null && !state.isProcessingAction) ? whiteTextColor : Colors.grey.shade300,
+                      foregroundColor: (state.capturedPhoto != null && !state.isProcessingAction) ? naviColor : Colors.grey.shade500,
+                      elevation: (state.capturedPhoto != null && !state.isProcessingAction) ? 3 : 0,
                     ),
-                    onPressed: _isProcessingAction ? null : () {
-                      if (_capturedPhoto == null) {
+                    onPressed: state.isProcessingAction ? null : () {
+                      if (state.capturedPhoto == null) {
                         showDialog(
                           context: context,
                           builder: (context) => AlertDialog(
@@ -904,13 +277,19 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                           ),
                         );
                       } else {
-                        _submitAttendance();
+                        // 🟢 提交
+                        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                          content: Text("att.msg_queueing".tr(args: [_getActionDisplayText(state.selectedAction)])),
+                          backgroundColor: Colors.blue,
+                          duration: const Duration(seconds: 2),
+                        ));
+                        ref.read(attendanceProvider.notifier).submitAttendance();
                       }
                     },
                     child: Text(
-                      _isProcessingAction 
+                      state.isProcessingAction 
                         ? "Processing..."
-                        : (_capturedPhoto != null 
+                        : (state.capturedPhoto != null 
                           ? "att.btn_confirm".tr(args: [actionDisplay])
                           : "att.btn_clock_attendance".tr()),
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)
@@ -925,7 +304,147 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     );
   }
 
-  // 辅助方法：构建今日打卡专用的 Time Box
+  void _showActionPicker(AttendanceState state) {
+    if (state.lastPunchTime != null) {
+      final difference = DateTime.now().difference(state.lastPunchTime!);
+      if (difference.inMinutes < 30) {
+        final waitMinutes = 30 - difference.inMinutes;
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Row(
+              children: [
+                Icon(Icons.timer, color: Colors.orange),
+                SizedBox(width: 10),
+                Text("Action Locked"),
+              ],
+            ),
+            content: Text("Please wait $waitMinutes more minutes before your next action to prevent duplicate records."),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))
+            ],
+          ),
+        );
+        return; 
+      }
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true, 
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) {
+        return Container(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text("att.select_action".tr(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 20),
+              
+              _buildActionTile(
+                title: "att.act_clock_in".tr(),
+                subtitle: state.hasAnyRecord ? "att.sub_locked_submitted".tr() : "att.sub_start_shift".tr(),
+                icon: Icons.login, color: Colors.green,
+                isLocked: state.hasAnyRecord, 
+                onTap: () => _handleAction("Clock In", state),
+              ),
+              const Divider(),
+              _buildActionTile(
+                title: "att.act_break_out".tr(),
+                subtitle: state.hasClockedOut 
+                    ? "Shift Ended" 
+                    : ((state.lastSession == 'Break Out') ? "att.sub_locked_verified".tr() : "att.sub_lunch".tr()),
+                icon: Icons.coffee, color: Colors.orange,
+                isLocked: !state.hasAnyRecord || (state.lastSession == 'Break Out') || state.hasClockedOut,
+                onTap: () => _handleAction("Break Out", state),
+              ),
+              _buildActionTile(
+                title: "att.act_break_in".tr(),
+                subtitle: state.hasClockedOut 
+                    ? "Shift Ended" 
+                    : ((state.lastSession == 'Break In') ? "att.sub_locked_verified".tr() : "att.sub_back_work".tr()),
+                icon: Icons.work_history, color: Colors.blue,
+                isLocked: !state.hasAnyRecord || (state.lastSession == 'Break In') || state.hasClockedOut || (state.lastSession != 'Break Out'),
+                onTap: () => _handleAction("Break In", state),
+              ),
+              const Divider(),
+              _buildActionTile(
+                title: "att.act_clock_out".tr(),
+                subtitle: state.hasClockedOut ? "att.sub_locked_verified".tr() : "att.sub_end_shift".tr(),
+                icon: Icons.logout, color: Colors.red,
+                isLocked: !state.hasAnyRecord || state.hasClockedOut,
+                onTap: () => _handleAction("Clock Out", state),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildActionTile({required String title, required String subtitle, required IconData icon, required Color color, required bool isLocked, required VoidCallback onTap}) {
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: isLocked ? Colors.grey : color, 
+        child: Icon(isLocked ? Icons.lock : icon, color: Colors.white)
+      ),
+      title: Text(title, style: TextStyle(color: isLocked ? Colors.grey : Colors.black, decoration: isLocked ? TextDecoration.lineThrough : null)),
+      subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
+      onTap: isLocked ? null : onTap,
+      enabled: !isLocked,
+    );
+  }
+
+  void _handleAction(String action, AttendanceState state) async {
+    Navigator.pop(context); 
+    final error = await ref.read(attendanceProvider.notifier).validateRestrictionsAndSetAction(action);
+    
+    // Guarding mounted after async gap
+    if (!mounted) return;
+    
+    if (error != null) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("Access Denied"), 
+          content: Text(error),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+        ),
+      );
+      return; 
+    }
+
+    if (state.referenceFaceIdPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("att.err_no_face_id".tr())));
+      return;
+    }
+
+    // 跳转验证
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => FaceCameraView(referencePath: state.referenceFaceIdPath))
+    ); 
+
+    // Guarding mounted after Navigator async gap
+    if (!mounted) return;
+
+    if (result != null && result is XFile) {
+      ref.read(attendanceProvider.notifier).setCapturedPhoto(result);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("att.msg_photo_captured".tr(args: [_getActionDisplayText(action)])),
+          backgroundColor: Colors.green));
+    }
+  }
+
+  String _getActionDisplayText(String action) {
+    if(action == "Clock In") return "att.act_clock_in".tr();
+    if(action == "Break Out") return "att.act_break_out".tr();
+    if(action == "Break In") return "att.act_break_in".tr();
+    if(action == "Clock Out") return "att.act_clock_out".tr();
+    return action;
+  }
+
   Widget _buildActionTimeBox(String label, String time) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -941,10 +460,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
             border: Border.all(color: Colors.white24),
           ),
           child: Center(
-            child: Text(
-              time, 
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 18)
-            ),
+            child: Text(time, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 18)),
           ),
         )
       ],
@@ -957,14 +473,11 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 // ==========================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
-
   @override
   State<HistoryTab> createState() => _HistoryTabState();
 }
-
 class _HistoryTabState extends State<HistoryTab> {
   bool _isDescending = true;
-
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -983,29 +496,17 @@ class _HistoryTabState extends State<HistoryTab> {
                     Text("att.header_date".tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
                     const SizedBox(width: 4),
                     InkWell(
-                      onTap: () {
-                        setState(() {
-                          _isDescending = !_isDescending;
-                        });
-                      },
+                      onTap: () => setState(() => _isDescending = !_isDescending),
                       child: Padding(
                         padding: const EdgeInsets.all(4.0),
-                        child: Icon(
-                          _isDescending ? Icons.arrow_downward : Icons.arrow_upward,
-                          size: 16,
-                          color: const Color(0xFF15438c),
-                        ),
+                        child: Icon(_isDescending ? Icons.arrow_downward : Icons.arrow_upward, size: 16, color: const Color(0xFF15438c)),
                       ),
                     ),
                   ],
                 ),
               ),
-              Expanded(
-                  flex: 4,
-                  child: Text("att.header_address".tr(), style: const TextStyle(fontWeight: FontWeight.bold))),
-              Expanded(
-                  flex: 2,
-                  child: Text("att.header_status".tr(), style: const TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.right)),
+              Expanded(flex: 4, child: Text("att.header_address".tr(), style: const TextStyle(fontWeight: FontWeight.bold))),
+              Expanded(flex: 2, child: Text("att.header_status".tr(), style: const TextStyle(fontWeight: FontWeight.bold), textAlign: TextAlign.right)),
             ],
           ),
         ),
@@ -1013,28 +514,21 @@ class _HistoryTabState extends State<HistoryTab> {
         
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('attendance')
+            stream: FirebaseFirestore.instance.collection('attendance')
                 .where('uid', isEqualTo: user.uid)
                 .orderBy('timestamp', descending: _isDescending)
                 .snapshots(),
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const ShimmerLoadingList();
-              }
+              if (snapshot.connectionState == ConnectionState.waiting) return const ShimmerLoadingList();
               
-              final allDocs = snapshot.data?.docs ?? [];
-              
-              final docs = allDocs.where((d) {
+              final docs = (snapshot.data?.docs ?? []).where((d) {
                 final data = d.data() as Map<String, dynamic>;
                 final address = data['address']?.toString() ?? '';
                 if (address.contains("Admin Manual") || address.contains("Admin Override") || address.contains("System Auto Clock Out")) return false;
                 return true;
               }).toList();
 
-              if (docs.isEmpty) {
-                return Center(child: Text("att.no_history".tr(), style: const TextStyle(color: Colors.grey)));
-              }
+              if (docs.isEmpty) return Center(child: Text("att.no_history".tr(), style: const TextStyle(color: Colors.grey)));
 
               return ListView.separated(
                 padding: const EdgeInsets.all(16),
@@ -1044,10 +538,8 @@ class _HistoryTabState extends State<HistoryTab> {
                   final data = docs[index].data() as Map<String, dynamic>;
                   final ts = (data['timestamp'] as Timestamp).toDate();
                   
-                  // 🟢 使用 Locale 格式化历史记录日期和时间
                   String displayTime = DateFormat('HH:mm:ss', context.locale.languageCode).format(ts);
                   String displayDate = DateFormat('dd-MM-yyyy', context.locale.languageCode).format(ts);
-
                   String status = data['verificationStatus'] ?? 'Pending';
                   bool isArchived = status == 'Archived';
 
@@ -1066,19 +558,8 @@ class _HistoryTabState extends State<HistoryTab> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(displayDate,
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.bold, 
-                                      fontSize: 13, 
-                                      color: isArchived ? Colors.grey : Colors.black54, 
-                                  )),
-                              Text(displayTime, 
-                                  style: TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
-                                      color: isArchived ? Colors.grey : Colors.black87, 
-                                      decoration: isArchived ? TextDecoration.lineThrough : null,
-                                  )), 
+                              Text(displayDate, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: isArchived ? Colors.grey : Colors.black54)),
+                              Text(displayTime, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isArchived ? Colors.grey : Colors.black87, decoration: isArchived ? TextDecoration.lineThrough : null)), 
                             ],
                           ),
                         ),
@@ -1086,12 +567,8 @@ class _HistoryTabState extends State<HistoryTab> {
                           flex: 4,
                           child: Text(
                             data['address'] ?? "Unknown",
-                            style: TextStyle(
-                              fontSize: 12, 
-                              color: isArchived ? Colors.grey : const Color(0xFF15438c),
-                            ),
-                            maxLines: 5,
-                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12, color: isArchived ? Colors.grey : const Color(0xFF15438c)),
+                            maxLines: 5, overflow: TextOverflow.ellipsis,
                           ),
                         ),
                         Expanded(
@@ -1114,50 +591,29 @@ class _HistoryTabState extends State<HistoryTab> {
   }
 
   Widget _buildStatusIcon(String status) {
-    if (status == 'Verified' || status == 'Corrected' || status == 'Approved') {
-      return const Icon(Icons.check_circle, color: Colors.green, size: 20);
-    } else if (status == 'Rejected') {
-      return const Icon(Icons.cancel, color: Colors.red, size: 20);
-    } else if (status == 'Archived') {
-      return const Icon(Icons.history, color: Colors.grey, size: 20); 
-    } else {
-      return const Icon(Icons.task_alt, color: Colors.black54, size: 20); 
-    }
+    if (status == 'Verified' || status == 'Corrected' || status == 'Approved') return const Icon(Icons.check_circle, color: Colors.green, size: 20);
+    if (status == 'Rejected') return const Icon(Icons.cancel, color: Colors.red, size: 20);
+    if (status == 'Archived') return const Icon(Icons.history, color: Colors.grey, size: 20); 
+    return const Icon(Icons.task_alt, color: Colors.black54, size: 20); 
   }
 }
 
 // ==========================================
 //  Tab 3: Schedule Tab 
 // ==========================================
-
-class ScheduleTab extends StatefulWidget {
+class ScheduleTab extends ConsumerStatefulWidget {
   const ScheduleTab({super.key});
   @override
-  State<ScheduleTab> createState() => _ScheduleTabState();
+  ConsumerState<ScheduleTab> createState() => _ScheduleTabState();
 }
-
-class _ScheduleTabState extends State<ScheduleTab> {
+class _ScheduleTabState extends ConsumerState<ScheduleTab> {
   DateTime _currentStartDate = DateTime.now();
-  String? _myEmpCode;
-  bool _isFetchingUser = true;
 
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
     _currentStartDate = now.subtract(Duration(days: now.weekday - 1));
-    _fetchEmployeeCode();
-  }
-
-  Future<void> _fetchEmployeeCode() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    try {
-      final q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: user.uid).limit(1).get();
-      if (q.docs.isNotEmpty && mounted) {
-        setState(() { _myEmpCode = q.docs.first.id; _isFetchingUser = false; });
-      } else { if(mounted) setState(() => _isFetchingUser = false); }
-    } catch (e) { if(mounted) setState(() => _isFetchingUser = false); }
   }
 
   void _changeWeek(int weeks) {
@@ -1165,23 +621,22 @@ class _ScheduleTabState extends State<ScheduleTab> {
   }
 
   String _formatDuration(Duration d) {
-    int minutes = d.inMinutes;
-    int h = minutes ~/ 60;
-    int m = minutes % 60;
+    int h = d.inMinutes ~/ 60;
+    int m = d.inMinutes % 60;
     return "${h}h ${m}m";
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isFetchingUser) return const Center(child: CircularProgressIndicator());
-    if (_myEmpCode == null) return Center(child: Text("att.err_profile_not_linked".tr()));
+    final state = ref.watch(attendanceProvider); // 🟢 直接读取全局缓存的 EmpCode
+    if (state.isFetchingUser) return const Center(child: CircularProgressIndicator());
+    if (state.myEmpCode.isEmpty) return Center(child: Text("att.err_profile_not_linked".tr()));
 
     final user = FirebaseAuth.instance.currentUser;
     final endDate = _currentStartDate.add(const Duration(days: 6));
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(endDate);
     
-    // 🟢 应用 Locale 到日期范围选择器
     final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(endDate)}";
 
     return Column(
@@ -1201,7 +656,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('schedules')
-                .where('userId', isEqualTo: _myEmpCode)
+                .where('userId', isEqualTo: state.myEmpCode)
                 .where('date', isGreaterThanOrEqualTo: startStr)
                 .where('date', isLessThanOrEqualTo: endStr)
                 .orderBy('date')
@@ -1247,24 +702,23 @@ class _ScheduleTabState extends State<ScheduleTab> {
                       }
 
                       if (attSnapshot.hasData && attSnapshot.data!.docs.isNotEmpty) {
-                        final docs = attSnapshot.data!.docs;
-                        final verifiedDocs = docs.where((d) {
+                        final verifiedDocs = attSnapshot.data!.docs.where((d) {
                           final data = d.data() as Map<String, dynamic>;
                           return data['verificationStatus'] == 'Verified' || data['verificationStatus'] == 'Corrected';
                         }).toList();
                         
                         if (verifiedDocs.isNotEmpty) {
-                            isAbsent = false; 
+                           isAbsent = false; 
                         }
 
                         QueryDocumentSnapshot? clockInDoc;
-                        try { clockInDoc = verifiedDocs.firstWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock In'); } catch (e) { clockInDoc = null; }
+                        try { clockInDoc = verifiedDocs.firstWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock In'); } catch (_) {}
 
                         QueryDocumentSnapshot? clockOutDoc;
-                        try { clockOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock Out'); } catch (e) { clockOutDoc = null; }
+                        try { clockOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock Out'); } catch (_) {}
 
                         QueryDocumentSnapshot? breakOutDoc;
-                        try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (e) { breakOutDoc = null; }
+                        try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (_) {}
 
                         if (clockInDoc != null) {
                            final data = clockInDoc.data() as Map<String, dynamic>;
@@ -1274,7 +728,6 @@ class _ScheduleTabState extends State<ScheduleTab> {
                            if (schedStart != null && ts.isAfter(schedStart)) {
                              lateStr = _formatDuration(ts.difference(schedStart));
                            }
-                           
                            status = "Working";
                            statusColor = Colors.blue;
                         }
@@ -1282,9 +735,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         if (clockOutDoc != null) {
                            final data = clockOutDoc.data() as Map<String, dynamic>;
                            final ts = (data['timestamp'] as Timestamp).toDate();
-                           
                            timeOut = DateFormat('HH:mm').format(ts);
-                           
                            status = "Present";
                            statusColor = Colors.green;
                            
@@ -1302,9 +753,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         }
                       }
 
-                      return _buildScheduleCard(
-                        scheduleData, timeIn, timeOut, status, statusColor, lateStr, underStr, otStr, isAbsent, context
-                      );
+                      return _buildScheduleCard(scheduleData, timeIn, timeOut, status, statusColor, lateStr, underStr, otStr, isAbsent, context);
                     }
                   );
                 },
@@ -1318,16 +767,11 @@ class _ScheduleTabState extends State<ScheduleTab> {
   
   Widget _buildScheduleCard(Map<String, dynamic> scheduleData, String inTime, String outTime, String status, Color color, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
-    
-    // 🟢 应用 Locale 格式化星期和日期
     final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
     final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
     
     String shiftStart = scheduleData['start'] != null ? DateFormat('HH:mm').format((scheduleData['start'] as Timestamp).toDate().toLocal()) : "--:--";
     String shiftEnd = scheduleData['end'] != null ? DateFormat('HH:mm').format((scheduleData['end'] as Timestamp).toDate().toLocal()) : "--:--";
-
-    Color lateColor = late == "0h 0m" ? Colors.black : Colors.red;
-    Color underColor = under == "0h 0m" ? Colors.black : Colors.red;
 
     return Card(
       elevation: 2,
@@ -1372,9 +816,9 @@ class _ScheduleTabState extends State<ScheduleTab> {
                         ),
                         const SizedBox(height: 8),
                       ],
-                      _buildStatRow("Late", late, lateColor),
+                      _buildStatRow("Late", late, late == "0h 0m" ? Colors.black : Colors.red),
                       const SizedBox(height: 4),
-                      _buildStatRow("Under", under, underColor),
+                      _buildStatRow("Under", under, under == "0h 0m" ? Colors.black : Colors.red),
                       const SizedBox(height: 4),
                       _buildStatRow("OT", ot, Colors.blue),
                     ],
@@ -1386,11 +830,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
                Container(
                  margin: const EdgeInsets.only(top: 10),
                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                 decoration: BoxDecoration(
-                   color: Colors.red.shade50,
-                   borderRadius: BorderRadius.circular(4),
-                   border: Border.all(color: Colors.red.shade200)
-                 ),
+                 decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red.shade200)),
                  child: const Text("ABSENT", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 1.0)),
                )
           ],
@@ -1409,9 +849,7 @@ class _ScheduleTabState extends State<ScheduleTab> {
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(color: const Color(0xFFE3F2FD), borderRadius: BorderRadius.circular(8)),
-          child: Center(
-            child: Text(time, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF15438c), fontSize: 15)),
-          ),
+          child: Center(child: Text(time, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF15438c), fontSize: 15))),
         )
       ],
     );
@@ -1431,35 +869,19 @@ class _ScheduleTabState extends State<ScheduleTab> {
 // ==========================================
 //  Tab 4: Submit Tab
 // ==========================================
-
-class SubmitTab extends StatefulWidget {
+class SubmitTab extends ConsumerStatefulWidget {
   const SubmitTab({super.key});
   @override
-  State<SubmitTab> createState() => _SubmitTabState();
+  ConsumerState<SubmitTab> createState() => _SubmitTabState();
 }
-
-class _SubmitTabState extends State<SubmitTab> {
+class _SubmitTabState extends ConsumerState<SubmitTab> {
   DateTime _currentStartDate = DateTime.now();
-  String? _myEmpCode;
-  bool _isFetchingUser = true;
 
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
     _currentStartDate = now.subtract(Duration(days: now.weekday - 1));
-    _fetchEmployeeCode();
-  }
-
-  Future<void> _fetchEmployeeCode() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    try {
-      final q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: user.uid).limit(1).get();
-      if (q.docs.isNotEmpty && mounted) {
-        setState(() { _myEmpCode = q.docs.first.id; _isFetchingUser = false; });
-      } else { if(mounted) setState(() => _isFetchingUser = false); }
-    } catch (e) { if(mounted) setState(() => _isFetchingUser = false); }
   }
 
   void _changeWeek(int weeks) {
@@ -1467,16 +889,14 @@ class _SubmitTabState extends State<SubmitTab> {
   }
 
   String _formatDuration(Duration d) {
-    int minutes = d.inMinutes;
-    int h = minutes ~/ 60;
-    int m = minutes % 60;
-    return "${h}h ${m}m";
+    return "${d.inMinutes ~/ 60}h ${d.inMinutes % 60}m";
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isFetchingUser) return const Center(child: CircularProgressIndicator());
-    if (_myEmpCode == null) return Center(child: Text("att.err_profile_not_linked".tr()));
+    final state = ref.watch(attendanceProvider); // 🟢 直接读取全局缓存的 EmpCode
+    if (state.isFetchingUser) return const Center(child: CircularProgressIndicator());
+    if (state.myEmpCode.isEmpty) return Center(child: Text("att.err_profile_not_linked".tr()));
 
     final user = FirebaseAuth.instance.currentUser;
     final now = DateTime.now();
@@ -1488,7 +908,6 @@ class _SubmitTabState extends State<SubmitTab> {
     final startStr = DateFormat('yyyy-MM-dd').format(_currentStartDate);
     final endStr = DateFormat('yyyy-MM-dd').format(effectiveEndDate);
     
-    // 🟢 修正 Tab 日期显示为 Locale aware
     final displayRange = "${DateFormat('dd MMM', context.locale.languageCode).format(_currentStartDate)} - ${DateFormat('dd MMM', context.locale.languageCode).format(originalEndDate)}";
     bool isFutureWeek = _currentStartDate.isAfter(endOfToday);
 
@@ -1516,7 +935,7 @@ class _SubmitTabState extends State<SubmitTab> {
             ? Center(child: Text("att.no_shifts".tr(), style: const TextStyle(color: Colors.grey))) 
             : StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance.collection('schedules')
-                .where('userId', isEqualTo: _myEmpCode)
+                .where('userId', isEqualTo: state.myEmpCode)
                 .where('date', isGreaterThanOrEqualTo: startStr)
                 .where('date', isLessThanOrEqualTo: endStr) 
                 .orderBy('date')
@@ -1552,53 +971,43 @@ class _SubmitTabState extends State<SubmitTab> {
                       String otStr = "0h 0m";
                       
                       bool isAbsent = false;
-                      final now = DateTime.now();
-                      final scheduleDate = DateTime.parse(dateStr);
+                      final checkDate = DateTime.parse(dateStr);
                       final today = DateTime(now.year, now.month, now.day);
-                      final checkDate = DateTime(scheduleDate.year, scheduleDate.month, scheduleDate.day);
                       
                       if (checkDate.isBefore(today)) {
                          isAbsent = true; 
                       }
 
                       if (attSnapshot.hasData && attSnapshot.data!.docs.isNotEmpty) {
-                        final docs = attSnapshot.data!.docs;
-                        attendanceId = docs.first.id;
-                        
-                        final verifiedDocs = docs.where((d) {
+                        attendanceId = attSnapshot.data!.docs.first.id;
+                        final verifiedDocs = attSnapshot.data!.docs.where((d) {
                           final data = d.data() as Map<String, dynamic>;
                           return data['verificationStatus'] == 'Verified' || data['verificationStatus'] == 'Corrected';
                         }).toList();
                         
                         if (verifiedDocs.isNotEmpty) {
-                            isAbsent = false; 
+                           isAbsent = false; 
                         }
 
                         QueryDocumentSnapshot? clockInDoc;
-                        try { clockInDoc = verifiedDocs.firstWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock In'); } catch (e) { clockInDoc = null; }
+                        try { clockInDoc = verifiedDocs.firstWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock In'); } catch (_) {}
 
                         QueryDocumentSnapshot? clockOutDoc;
-                        try { clockOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock Out'); } catch (e) { clockOutDoc = null; }
+                        try { clockOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Clock Out'); } catch (_) {}
 
                         QueryDocumentSnapshot? breakOutDoc;
-                        try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (e) { breakOutDoc = null; }
+                        try { breakOutDoc = verifiedDocs.lastWhere((d) => (d.data() as Map<String,dynamic>)['session'] == 'Break Out'); } catch (_) {}
 
                         if (clockInDoc != null) {
-                           final data = clockInDoc.data() as Map<String, dynamic>;
-                           final ts = (data['timestamp'] as Timestamp).toDate();
-                           
+                           final ts = ((clockInDoc.data() as Map<String, dynamic>)['timestamp'] as Timestamp).toDate();
                            timeIn = DateFormat('HH:mm').format(ts);
                            if (schedStart != null && ts.isAfter(schedStart)) {
                              lateStr = _formatDuration(ts.difference(schedStart));
                            }
                         }
-
                         if (clockOutDoc != null) {
-                           final data = clockOutDoc.data() as Map<String, dynamic>;
-                           final ts = (data['timestamp'] as Timestamp).toDate();
-                           
+                           final ts = ((clockOutDoc.data() as Map<String, dynamic>)['timestamp'] as Timestamp).toDate();
                            timeOut = DateFormat('HH:mm').format(ts);
-                           
                            if (schedEnd != null) {
                              if (ts.isAfter(schedEnd)) {
                                otStr = _formatDuration(ts.difference(schedEnd));
@@ -1607,15 +1016,11 @@ class _SubmitTabState extends State<SubmitTab> {
                              }
                            }
                         } else if (breakOutDoc != null) {
-                           final data = breakOutDoc.data() as Map<String, dynamic>;
-                           final ts = (data['timestamp'] as Timestamp).toDate();
-                           timeOut = DateFormat('HH:mm').format(ts);
+                           timeOut = DateFormat('HH:mm').format(((breakOutDoc.data() as Map<String, dynamic>)['timestamp'] as Timestamp).toDate());
                         }
                       }
 
-                      return _buildSubmitCard(
-                        scheduleData, attendanceId, timeIn, timeOut, lateStr, underStr, otStr, isAbsent, context
-                      );
+                      return _buildSubmitCard(scheduleData, attendanceId, timeIn, timeOut, lateStr, underStr, otStr, isAbsent, context);
                     }
                   );
                 },
@@ -1629,24 +1034,16 @@ class _SubmitTabState extends State<SubmitTab> {
 
   Widget _buildSubmitCard(Map<String, dynamic> scheduleData, String? attendanceId, String inTime, String outTime, String late, String under, String ot, bool isAbsent, BuildContext context) {
     final dateObj = DateTime.parse(scheduleData['date']);
-    
-    // 🟢 Locale aware formatting
     final weekDay = DateFormat('EEEE', context.locale.languageCode).format(dateObj);
     final fmtDate = DateFormat('dd/MM/yyyy', context.locale.languageCode).format(dateObj);
     
     String shiftStart = scheduleData['start'] != null ? DateFormat('HH:mm').format((scheduleData['start'] as Timestamp).toDate().toLocal()) : "--:--";
     String shiftEnd = scheduleData['end'] != null ? DateFormat('HH:mm').format((scheduleData['end'] as Timestamp).toDate().toLocal()) : "--:--";
 
-    Color lateColor = late == "0h 0m" ? Colors.black : Colors.red;
-    Color underColor = under == "0h 0m" ? Colors.black : Colors.red;
-
     return GestureDetector(
       onTap: () {
         Navigator.push(context, MaterialPageRoute(builder: (_) => CorrectionRequestScreen(
-          date: dateObj, 
-          attendanceId: attendanceId, 
-          originalIn: inTime, 
-          originalOut: outTime
+          date: dateObj, attendanceId: attendanceId, originalIn: inTime, originalOut: outTime
         )));
       },
       child: Card(
@@ -1687,9 +1084,9 @@ class _SubmitTabState extends State<SubmitTab> {
                       children: [
                         const Icon(Icons.edit_note, color: Colors.blue, size: 24),
                         const SizedBox(height: 8),
-                        _buildStatRow("Late", late, lateColor),
+                        _buildStatRow("Late", late, late == "0h 0m" ? Colors.black : Colors.red),
                         const SizedBox(height: 4),
-                        _buildStatRow("Under", under, underColor),
+                        _buildStatRow("Under", under, under == "0h 0m" ? Colors.black : Colors.red),
                         const SizedBox(height: 4),
                         _buildStatRow("OT", ot, Colors.blue),
                       ],
@@ -1701,11 +1098,7 @@ class _SubmitTabState extends State<SubmitTab> {
                Container(
                  margin: const EdgeInsets.only(top: 10),
                  padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                 decoration: BoxDecoration(
-                   color: Colors.red.shade50,
-                   borderRadius: BorderRadius.circular(4),
-                   border: Border.all(color: Colors.red.shade200)
-                 ),
+                 decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red.shade200)),
                  child: const Text("ABSENT", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 1.0)),
                )
             ],
@@ -1725,9 +1118,7 @@ class _SubmitTabState extends State<SubmitTab> {
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(color: const Color(0xFFE3F2FD), borderRadius: BorderRadius.circular(8)),
-          child: Center(
-            child: Text(time, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF15438c), fontSize: 15)),
-          ),
+          child: Center(child: Text(time, style: const TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF15438c), fontSize: 15))),
         )
       ],
     );

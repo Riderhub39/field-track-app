@@ -1,31 +1,21 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
-import 'package:open_filex/open_filex.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:http/http.dart' as http;
 import '../widgets/shimmer_loading.dart';
-// 🟢 导入生物识别服务
-import '../services/biometric_service.dart';
 
-class PayslipScreen extends StatefulWidget {
+// 🟢 引入控制器
+import 'payslip_controller.dart';
+
+class PayslipScreen extends ConsumerStatefulWidget {
   const PayslipScreen({super.key});
 
   @override
-  State<PayslipScreen> createState() => _PayslipScreenState();
+  ConsumerState<PayslipScreen> createState() => _PayslipScreenState();
 }
 
-class _PayslipScreenState extends State<PayslipScreen> {
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-  bool _isGenerating = false;
-  String _loadingText = "Processing...";
-
-  // --- Salary Advance Form Controllers ---
+class _PayslipScreenState extends ConsumerState<PayslipScreen> {
   final TextEditingController _amountCtrl = TextEditingController();
   final TextEditingController _reasonCtrl = TextEditingController();
   bool _agreedToDeduction = false;
@@ -37,27 +27,9 @@ class _PayslipScreenState extends State<PayslipScreen> {
     super.dispose();
   }
 
-  // 🟢 核心功能：打开敏感文档前的生物识别验证
-  Future<void> _openSecuredDocument(Function onAuthenticated) async {
-    bool success = await BiometricService().authenticateStaff();
-    
-    if (success) {
-      onAuthenticated(); // 验证成功，执行打开操作
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text("Authentication required to view sensitive documents."),
-            backgroundColor: Colors.red,
-          )
-        );
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final user = _auth.currentUser;
+    final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
       return Scaffold(
@@ -65,6 +37,30 @@ class _PayslipScreenState extends State<PayslipScreen> {
         body: const Center(child: Text("Please login first")),
       );
     }
+
+    final state = ref.watch(payslipProvider);
+
+    // 🟢 监听状态改变以显示弹窗或切换 Tab
+    ref.listen<PayslipState>(payslipProvider, (previous, next) {
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red));
+        ref.read(payslipProvider.notifier).clearMessages();
+      }
+
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green));
+        // 清空表单
+        _amountCtrl.clear();
+        _reasonCtrl.clear();
+        setState(() => _agreedToDeduction = false);
+        ref.read(payslipProvider.notifier).clearMessages();
+      }
+
+      if (next.shouldSwitchToDocumentsTab && !(previous?.shouldSwitchToDocumentsTab ?? false)) {
+        DefaultTabController.of(context).animateTo(0);
+        ref.read(payslipProvider.notifier).clearTabSwitch();
+      }
+    });
 
     return DefaultTabController(
       length: 2,
@@ -111,14 +107,14 @@ class _PayslipScreenState extends State<PayslipScreen> {
                     _buildDocumentsTab(profileId, user.uid),
 
                     // --- TAB 2: REQUEST FORM ---
-                    _buildAdvanceRequestTab(profileId, userData, user.uid),
+                    _buildAdvanceRequestTab(profileId, userData, user.uid, state.isGenerating),
                   ],
                 );
               },
             ),
 
             // Loading Overlay 
-            if (_isGenerating)
+            if (state.isGenerating)
               Container(
                 color: Colors.black45,
                 child: Center(
@@ -127,7 +123,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
                     children: [
                       const CircularProgressIndicator(color: Colors.white),
                       const SizedBox(height: 16),
-                      Text(_loadingText, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
+                      Text(state.loadingText, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold))
                     ],
                   ),
                 ),
@@ -167,7 +163,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
 
               final rawDocs = snapshot.data!.docs;
               
-              // 🟢 核心防护：基于月份去重，只保留同一月份最新的记录（以防 Web 端迁移旧数据时的残留）
+              // 基于月份去重，只保留同一月份最新的记录
               final Map<String, Map<String, dynamic>> uniquePayslips = {};
               
               for (var doc in rawDocs) {
@@ -177,7 +173,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 if (!uniquePayslips.containsKey(month)) {
                   uniquePayslips[month] = data;
                 } else {
-                  // 如果有重复的月份，比较 createdAt 时间，保留最新的
                   final currentTs = uniquePayslips[month]!['createdAt'] as Timestamp?;
                   final newTs = data['createdAt'] as Timestamp?;
                   
@@ -188,8 +183,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
               }
 
               final docsList = uniquePayslips.values.toList();
-
-              // 按照月份倒序排列 (最新月份在上)
               docsList.sort((a, b) {
                 final mA = a['month'] ?? '';
                 final mB = b['month'] ?? '';
@@ -262,8 +255,11 @@ class _PayslipScreenState extends State<PayslipScreen> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade300)),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        // 🟢 加入生物识别验证
-        onTap: () => _openSecuredDocument(() => _generateAndOpenPayslipPdf(data)), 
+        onTap: () {
+          ref.read(payslipProvider.notifier).openSecuredDocument(() => 
+            ref.read(payslipProvider.notifier).generateAndOpenPayslipPdf(data)
+          );
+        }, 
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Row(
@@ -326,10 +322,13 @@ class _PayslipScreenState extends State<PayslipScreen> {
             ),
             if (data['pdfUrl'] != null) ...[
               const SizedBox(width: 8),
-              // 🟢 加入生物识别验证来查看借据 PDF
               IconButton(
                 icon: const Icon(Icons.picture_as_pdf, color: Colors.redAccent),
-                onPressed: () => _openSecuredDocument(() => _downloadAndOpenIouPdf(data['pdfUrl'], data['appliedAt'])),
+                onPressed: () {
+                  ref.read(payslipProvider.notifier).openSecuredDocument(() => 
+                    ref.read(payslipProvider.notifier).downloadAndOpenIouPdf(data['pdfUrl'], data['appliedAt'])
+                  );
+                },
               )
             ]
           ],
@@ -342,7 +341,7 @@ class _PayslipScreenState extends State<PayslipScreen> {
   // TAB 2: REQUEST ADVANCE FORM
   // ===========================================================================
 
-  Widget _buildAdvanceRequestTab(String profileId, Map<String, dynamic> userData, String authUid) {
+  Widget _buildAdvanceRequestTab(String profileId, Map<String, dynamic> userData, String authUid, bool isGenerating) {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Card(
@@ -403,7 +402,16 @@ class _PayslipScreenState extends State<PayslipScreen> {
                 height: 48,
                 child: ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-                  onPressed: () => _submitAdvanceRequest(profileId, userData, authUid),
+                  onPressed: isGenerating ? null : () {
+                    ref.read(payslipProvider.notifier).submitAdvanceRequest(
+                      amountText: _amountCtrl.text,
+                      reason: _reasonCtrl.text,
+                      agreedToDeduction: _agreedToDeduction,
+                      profileId: profileId,
+                      userData: userData,
+                      authUid: authUid,
+                    );
+                  },
                   icon: const Icon(Icons.gavel, size: 18),
                   label: const Text("Generate I.O.U & Submit", style: TextStyle(fontWeight: FontWeight.bold)),
                 ),
@@ -412,377 +420,6 @@ class _PayslipScreenState extends State<PayslipScreen> {
           ),
         ),
       ),
-    );
-  }
-
-  // --- LOGIC: Submit Advance Request ---
-  Future<void> _submitAdvanceRequest(String profileId, Map<String, dynamic> userData, String authUid) async {
-    final amountText = _amountCtrl.text.trim();
-    final reason = _reasonCtrl.text.trim();
-
-    if (amountText.isEmpty || double.tryParse(amountText) == null || double.parse(amountText) <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please enter a valid amount.")));
-      return;
-    }
-    if (reason.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please provide a reason.")));
-      return;
-    }
-    if (!_agreedToDeduction) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("You must agree to the deduction terms.")));
-      return;
-    }
-
-    setState(() { _isGenerating = true; _loadingText = "Generating Agreement PDF..."; });
-    
-    final double amount = double.parse(amountText);
-    final staffName = userData['personal']?['name'] ?? 'Unknown Staff';
-    final icNo = userData['personal']?['icNumber'] ?? 'N/A';
-    final staffCode = userData['empCode'] ?? 'N/A';
-
-    try {
-      final pdf = pw.Document();
-      final dateNow = DateTime.now();
-      final dateFormatted = DateFormat('dd MMMM yyyy').format(dateNow);
-
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.all(40),
-          build: (pw.Context context) {
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Center(child: pw.Text("SALARY ADVANCE AGREEMENT (I.O.U)", style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold))),
-                pw.SizedBox(height: 30),
-                pw.Text("Date: $dateFormatted"),
-                pw.SizedBox(height: 20),
-                pw.Text("EMPLOYEE DETAILS", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                pw.Divider(),
-                pw.Text("Name: $staffName"),
-                pw.Text("Employee ID: $staffCode"),
-                pw.Text("IC Number: $icNo"),
-                pw.SizedBox(height: 20),
-                pw.Text("ADVANCE DETAILS", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                pw.Divider(),
-                pw.Text("Requested Amount: RM ${amount.toStringAsFixed(2)}"),
-                pw.Text("Reason: $reason"),
-                pw.SizedBox(height: 30),
-                pw.Text("AGREEMENT", style: pw.TextStyle(fontWeight: pw.FontWeight.bold)),
-                pw.Divider(),
-                pw.Text(
-                  "I, $staffName (IC: $icNo), hereby acknowledge the request of a salary advance amounting to RM ${amount.toStringAsFixed(2)}.\n\n"
-                  "I authorize the company to fully deduct this amount from my upcoming salary/payroll. "
-                  "In the event of my resignation or termination prior to the deduction, I agree that this amount will be deducted from my final pay or I will reimburse the company immediately.",
-                  style: const pw.TextStyle(lineSpacing: 1.5),
-                ),
-                pw.SizedBox(height: 50),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.center,
-                      children: [
-                        pw.Text("___________________________"),
-                        pw.SizedBox(height: 5),
-                        pw.Text("Employee E-Signature / Confirmation"),
-                        pw.Text("Confirmed via App on $dateFormatted", style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey)),
-                      ]
-                    ),
-                    pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.center,
-                      children: [
-                        pw.Text("___________________________"),
-                        pw.SizedBox(height: 5),
-                        pw.Text("Management Approval"),
-                      ]
-                    )
-                  ]
-                )
-              ]
-            );
-          }
-        )
-      );
-
-      final pdfBytes = await pdf.save();
-
-      setState(() => _loadingText = "Uploading Document...");
-      final fileName = 'iou_${authUid}_${dateNow.millisecondsSinceEpoch}.pdf';
-      final storageRef = FirebaseStorage.instance.ref().child('salary_advances').child(fileName);
-      
-      final uploadTask = storageRef.putData(pdfBytes, SettableMetadata(contentType: 'application/pdf'));
-      final snapshot = await uploadTask;
-      final downloadUrl = await snapshot.ref.getDownloadURL();
-
-      setState(() => _loadingText = "Submitting Request...");
-      await FirebaseFirestore.instance.collection('salary_advances').add({
-        'uid': profileId,
-        'authUid': authUid,
-        'empName': staffName,
-        'empCode': staffCode,
-        'amount': amount,
-        'reason': reason,
-        'status': 'Pending',
-        'pdfUrl': downloadUrl,
-        'appliedAt': FieldValue.serverTimestamp(),
-      });
-
-      if (mounted) {
-        setState(() {
-          _isGenerating = false;
-          _amountCtrl.clear();
-          _reasonCtrl.clear();
-          _agreedToDeduction = false;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Advance request submitted successfully!"), backgroundColor: Colors.green));
-        // Switch back to tab 1 automatically to see the pending record
-        DefaultTabController.of(context).animateTo(0);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isGenerating = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Failed to submit: $e"), backgroundColor: Colors.red));
-      }
-    }
-  }
-
-  // ===========================================================================
-  // PDF HELPERS (Download IOU & Generate Payslip)
-  // ===========================================================================
-
-  // 🟢 下载并打开 I.O.U 借据
-  Future<void> _downloadAndOpenIouPdf(String url, dynamic timestamp) async {
-    setState(() { _isGenerating = true; _loadingText = "Decrypting Document..."; });
-    try {
-      final response = await http.get(Uri.parse(url));
-      final output = await getTemporaryDirectory();
-      
-      final timeSuffix = timestamp != null ? (timestamp as Timestamp).seconds.toString() : 'temp';
-      final file = File("${output.path}/IOU_$timeSuffix.pdf");
-      
-      await file.writeAsBytes(response.bodyBytes);
-      if (mounted) {
-        setState(() => _isGenerating = false);
-        await OpenFilex.open(file.path);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isGenerating = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Failed to open document: $e")));
-      }
-    }
-  }
-
-  // 🟢 在本地排版并打开薪资单
-  Future<void> _generateAndOpenPayslipPdf(Map<String, dynamic> data) async {
-    setState(() { _isGenerating = true; _loadingText = "Decrypting Payslip..."; });
-
-    try {
-      final pdf = pw.Document();
-
-      final basic = (data['basic'] ?? 0).toDouble();
-      final earnings = data['earnings'] as Map<String, dynamic>? ?? {};
-      final deductions = data['deductions'] as Map<String, dynamic>? ?? {};
-      
-      final gross = (data['gross'] ?? 0).toDouble();
-      final net = (data['net'] ?? 0).toDouble();
-      final totalDed = (deductions['total'] ?? 0).toDouble();
-
-      pdf.addPage(
-        pw.Page(
-          pageFormat: PdfPageFormat.a4,
-          margin: const pw.EdgeInsets.all(32),
-          build: (pw.Context context) {
-            return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Header(
-                  level: 0,
-                  child: pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text("RH RIDER HUB MOTOR (M) SDN. BHD.", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18)),
-                      pw.SizedBox(height: 4),
-                      pw.Text("NO.26&28, JALAN MERU IMPIAN B3, CASA KAYANGAN @ PUSAT PERNIAGAAN MERU IMPIAN,\nBANDAR MERU RAYA, 30020 IPOH, Perak", style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
-                      pw.SizedBox(height: 10),
-                      pw.Align(
-                        alignment: pw.Alignment.centerRight,
-                        child: pw.Text("Payment Date: ${data['paymentDate'] ?? '-'}", style: const pw.TextStyle(fontSize: 10)),
-                      ),
-                    ],
-                  ),
-                ),
-                pw.SizedBox(height: 20),
-                pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
-                  children: [
-                    pw.Expanded(
-                      child: pw.Column(
-                        children: [
-                          _buildPdfRow("Employee Name", data['staffName']),
-                          _buildPdfRow("Department", data['department']),
-                          _buildPdfRow("Employee Code", data['staffCode']),
-                        ],
-                      ),
-                    ),
-                    pw.SizedBox(width: 20),
-                    pw.Expanded(
-                      child: pw.Column(
-                        children: [
-                          _buildPdfRow("IC Number", data['icNo']),
-                          _buildPdfRow("EPF Number", data['epfNo']),
-                          _buildPdfRow("Pay Period", data['period']),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 20),
-                pw.Container(
-                  decoration: const pw.BoxDecoration(border: pw.Border(top: pw.BorderSide(), bottom: pw.BorderSide())),
-                  padding: const pw.EdgeInsets.symmetric(vertical: 5),
-                  child: pw.Row(
-                    children: [
-                      pw.Expanded(flex: 3, child: pw.Text("EARNINGS", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-                      pw.Expanded(flex: 1, child: pw.Text("AMOUNT", textAlign: pw.TextAlign.right, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-                      pw.SizedBox(width: 20),
-                      pw.Expanded(flex: 3, child: pw.Text("DEDUCTIONS", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-                      pw.Expanded(flex: 1, child: pw.Text("AMOUNT", textAlign: pw.TextAlign.right, style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10))),
-                    ],
-                  ),
-                ),
-                pw.SizedBox(height: 5),
-                pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.start,
-                  children: [
-                    pw.Expanded(
-                      child: pw.Column(
-                        children: [
-                          _buildLineItem("BASIC PAY", basic),
-                          if ((earnings['commission'] ?? 0) > 0) _buildLineItem("COMMISSION", (earnings['commission']).toDouble()),
-                          if ((earnings['ot'] ?? 0) > 0) _buildLineItem("OVERTIME", (earnings['ot']).toDouble()),
-                          if ((earnings['allowance'] ?? 0) > 0) _buildLineItem("ALLOWANCE", (earnings['allowance']).toDouble()),
-                        ],
-                      ),
-                    ),
-                    pw.SizedBox(width: 20),
-                    pw.Expanded(
-                      child: pw.Column(
-                        children: [
-                          _buildLineItem("EPF (Employee)", (deductions['epf'] ?? 0).toDouble()),
-                          _buildLineItem("SOCSO (Employee)", (deductions['socso'] ?? 0).toDouble()),
-                          _buildLineItem("EIS (Employee)", (deductions['eis'] ?? 0).toDouble()),
-                          if ((deductions['late'] ?? 0) > 0) _buildLineItem("LATE DEDUCTION", (deductions['late']).toDouble(), isDeduction: true),
-                          if ((deductions['advance'] ?? 0) > 0) _buildLineItem("SALARY ADVANCE", (deductions['advance']).toDouble(), isDeduction: true),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 10),
-                pw.Divider(),
-                pw.Row(
-                  children: [
-                    pw.Expanded(
-                      child: pw.Row(
-                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                        children: [
-                          pw.Text("Total Earnings", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-                          pw.Text(gross.toStringAsFixed(2), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-                        ],
-                      )
-                    ),
-                    pw.SizedBox(width: 20),
-                    pw.Expanded(
-                      child: pw.Row(
-                        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                        children: [
-                          pw.Text("Total Deductions", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-                          pw.Text(totalDed.toStringAsFixed(2), style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 10)),
-                        ],
-                      )
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 20),
-                pw.Container(
-                  padding: const pw.EdgeInsets.all(10),
-                  decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey300)),
-                  child: pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.start,
-                        children: [
-                          _buildEmployerRow("Employer EPF", data['employer_epf']),
-                          _buildEmployerRow("Employer SOCSO", data['employer_socso']),
-                        ],
-                      ),
-                      pw.Column(
-                        crossAxisAlignment: pw.CrossAxisAlignment.end,
-                        children: [
-                          pw.Text("NET PAY", style: const pw.TextStyle(fontSize: 10, color: PdfColors.grey700)),
-                          pw.Text("RM ${net.toStringAsFixed(2)}", style: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 18, color: PdfColors.black)),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-      );
-
-      final output = await getTemporaryDirectory();
-      final file = File("${output.path}/Payslip_${data['month']}.pdf");
-      await file.writeAsBytes(await pdf.save());
-
-      if (mounted) {
-        setState(() => _isGenerating = false);
-        await OpenFilex.open(file.path);
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _isGenerating = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Failed to generate PDF: $e")));
-      }
-    }
-  }
-
-  // --- PDF Build Helpers ---
-  pw.Widget _buildPdfRow(String label, dynamic value) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.only(bottom: 2),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Text(label, style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700)),
-          pw.Text(value?.toString() ?? "-", style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildLineItem(String label, double amount, {bool isDeduction = false}) {
-    return pw.Padding(
-      padding: const pw.EdgeInsets.only(bottom: 4),
-      child: pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        children: [
-          pw.Text(label, style: pw.TextStyle(fontSize: 9, color: isDeduction ? PdfColors.red : PdfColors.black)),
-          pw.Text(amount.toStringAsFixed(2), style: pw.TextStyle(fontSize: 9, color: isDeduction ? PdfColors.red : PdfColors.black)),
-        ],
-      ),
-    );
-  }
-
-  pw.Widget _buildEmployerRow(String label, dynamic val) {
-    final amount = (val ?? 0).toDouble();
-    return pw.Padding(
-      padding: const pw.EdgeInsets.only(bottom: 2),
-      child: pw.Text("$label : ${amount.toStringAsFixed(2)}", style: const pw.TextStyle(fontSize: 8)),
     );
   }
 }

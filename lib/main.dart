@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 新增：引入 Riverpod
+import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 引入 Riverpod
 
 // 📦 Import Biometric Guard 
 import 'widgets/biometric_guard.dart'; 
@@ -11,6 +11,12 @@ import 'firebase_options.dart';
 import 'screens/login_screen.dart'; 
 import 'screens/home_screen.dart';
 import 'services/notification_service.dart';
+
+// 🟢 1. 定义一个全局的 Auth 状态 Provider
+// 以后任何页面想要知道用户是否登录、获取 user.uid，只需 ref.watch(authStateProvider) 即可
+final authStateProvider = StreamProvider<User?>((ref) {
+  return FirebaseAuth.instance.authStateChanges();
+});
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,7 +33,7 @@ void main() async {
   // 3. Initialize Localization
   await EasyLocalization.ensureInitialized();
 
-  // 🟢 4. 使用 ProviderScope 包装应用最外层，这是使用 Riverpod 的必要条件
+  // 4. 使用 ProviderScope 包装应用最外层
   runApp(
     ProviderScope(
       child: EasyLocalization(
@@ -45,11 +51,15 @@ void main() async {
   );
 }
 
-class MyApp extends StatelessWidget {
+// 🟢 2. 将 StatelessWidget 替换为 ConsumerWidget，使其具备读取 Provider 的能力
+class MyApp extends ConsumerWidget {
   const MyApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 🟢 3. 监听登录状态
+    final authState = ref.watch(authStateProvider);
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       
@@ -71,32 +81,23 @@ class MyApp extends StatelessWidget {
         );
       },
 
-      // Auth Flow
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          
-          if (snapshot.hasError) {
-            return const Scaffold(
-              body: Center(child: Text("Connection Error. Please restart.")),
-            );
-          }
-
-          if (snapshot.hasData) {
-            // 🟢 登录成功后，绑定 FCM Token，以便后台能推送消息给这个人
-            final user = snapshot.data!;
+      // 🟢 4. 使用 Riverpod 的 .when() 优雅地处理异步状态流
+      home: authState.when(
+        data: (user) {
+          if (user != null) {
+            // 登录成功后，绑定 FCM Token
             NotificationService().bindFCMToken(user.uid);
-            
             return const HomeScreen(); 
           }
-
+          // 未登录
           return const LoginScreen(); 
         },
+        loading: () => const Scaffold(
+          body: Center(child: CircularProgressIndicator()),
+        ),
+        error: (e, stack) => Scaffold(
+          body: Center(child: Text("Connection Error: $e\nPlease restart.")),
+        ),
       ),
     );
   }

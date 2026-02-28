@@ -1,63 +1,35 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:file_picker/file_picker.dart'; 
 import 'package:easy_localization/easy_localization.dart';
+import 'package:url_launcher/url_launcher.dart';
 
-class LeaveApplicationScreen extends StatefulWidget {
+// 🟢 引入控制器
+import 'leave_application_controller.dart';
+
+class LeaveApplicationScreen extends ConsumerStatefulWidget {
   const LeaveApplicationScreen({super.key});
 
   @override
-  State<LeaveApplicationScreen> createState() => _LeaveApplicationScreenState();
+  ConsumerState<LeaveApplicationScreen> createState() => _LeaveApplicationScreenState();
 }
 
-class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
+class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen> {
   final _formKey = GlobalKey<FormState>();
-  bool _isLoading = false;
+  final TextEditingController _reasonController = TextEditingController();
 
-  String _leaveTypeKey = 'leave.type_annual'; 
   final List<String> _leaveTypeKeys = [
     'leave.type_annual', 
     'leave.type_medical', 
     'leave.type_unpaid'
   ];
-  
-  DateTime? _startDate;
-  DateTime? _endDate;
-  final TextEditingController _reasonController = TextEditingController();
-
-  // 🟢 初始为空，全靠 Firestore 提供数据
-  Map<String, dynamic> _balances = {
-    'annual': 0, 
-    'medical': 0, 
-    'total_annual': 0, 
-    'total_medical': 0 
-  };
-  bool _balanceLoaded = false;
-
-  PlatformFile? _selectedFile; 
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchBalances();
-  }
 
   @override
   void dispose() {
     _reasonController.dispose();
     super.dispose();
-  }
-
-  String _getStandardEnglishType(String key) {
-    switch (key) {
-      case 'leave.type_annual': return 'Annual Leave';
-      case 'leave.type_medical': return 'Medical Leave';
-      case 'leave.type_unpaid': return 'Unpaid Leave';
-      default: return 'Annual Leave';
-    }
   }
 
   String _getLocalizedTypeFromDb(String dbValue) {
@@ -67,47 +39,10 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     return dbValue;
   }
 
-  Future<void> _fetchBalances() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    try {
-      Map<String, dynamic>? userData;
-      final docSnap = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      
-      if (docSnap.exists) {
-        userData = docSnap.data();
-      } else {
-        final q = await FirebaseFirestore.instance.collection('users').where('personal.email', isEqualTo: user.email).limit(1).get();
-        if (q.docs.isNotEmpty) {
-          userData = q.docs.first.data();
-        }
-      }
-
-      if (userData != null && userData.containsKey('leave_balance')) {
-        if (mounted) {
-          setState(() { 
-            // 🟢 直接采用从 Admin Web 端算好并存入 Firestore 的真实数据
-            _balances = {
-              ..._balances,
-              ...userData!['leave_balance']
-            }; 
-            _balanceLoaded = true; 
-          });
-        }
-      } else {
-        // 如果新用户还没有被 Web 端 recalculate 过
-        if (mounted) setState(() => _balanceLoaded = true);
-      }
-    } catch (e) {
-      debugPrint("Error fetching balance: $e");
-    }
-  }
-
-  Future<void> _pickDate(bool isStart) async {
+  Future<void> _pickDate(BuildContext context, bool isStart, DateTime? currentStart, DateTime? currentEnd) async {
     final now = DateTime.now();
     DateTime firstDateAllowed = DateTime(2024); 
-    DateTime initialDate = isStart ? (_startDate ?? now) : (_endDate ?? (_startDate ?? now));
+    DateTime initialDate = isStart ? (currentStart ?? now) : (currentEnd ?? (currentStart ?? now));
     
     if (initialDate.isBefore(firstDateAllowed)) initialDate = firstDateAllowed;
 
@@ -119,193 +54,43 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     );
 
     if (picked != null) {
-      setState(() {
-        if (isStart) {
-          _startDate = picked;
-          if (_endDate != null && _endDate!.isBefore(_startDate!)) {
-            _endDate = null;
-          }
-        } else {
-          _endDate = picked;
-        }
-      });
-    }
-  }
-
-  int _calculateWorkingDays(DateTime start, DateTime end) {
-    int days = 0;
-    DateTime current = start;
-    while (current.isBefore(end) || current.isAtSameMomentAs(end)) {
-      if (current.weekday != DateTime.sunday) { 
-        days++;
-      }
-      current = current.add(const Duration(days: 1));
-    }
-    return days;
-  }
-
-  Future<void> _pickAttachment() async {
-    try {
-      FilePickerResult? result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'], 
-      );
-
-      if (result != null) {
-        setState(() => _selectedFile = result.files.first);
-      }
-    } catch (e) {
-      debugPrint("Error picking file: $e");
-    }
-  }
-
-  Future<bool> _checkForDuplicateLeave(String uid, DateTime start, DateTime end) async {
-    final q = await FirebaseFirestore.instance
-        .collection('leaves')
-        .where('authUid', isEqualTo: uid)
-        .where('status', isEqualTo: 'Approved')
-        .get();
-
-    for (var doc in q.docs) {
-      final data = doc.data();
-      DateTime existingStart = DateTime.parse(data['startDate']);
-      DateTime existingEnd = DateTime.parse(data['endDate']);
-
-      if (start.isBefore(existingEnd.add(const Duration(days: 1))) && end.isAfter(existingStart.subtract(const Duration(days: 1)))) {
-        return true; 
-      }
-    }
-    return false;
-  }
-
-  Future<void> _submitApplication() async {
-    if (!_formKey.currentState!.validate()) return;
-    
-    if (_startDate == null || _endDate == null) {
-      _showSnack("leave.error_select_dates".tr());
-      return;
-    }
-
-    int days = _calculateWorkingDays(_startDate!, _endDate!);
-    if (days <= 0) {
-       _showSnack("leave.error_no_working_days".tr());
-       return;
-    }
-
-    if (_leaveTypeKey == 'leave.type_annual') {
-      int annualBal = (_balances['annual'] is int) ? _balances['annual'] : 0;
-      if (annualBal < days) {
-        _showSnack("leave.error_insufficient".tr(args: [days.toString(), annualBal.toString()]));
-        return;
-      }
-    } else if (_leaveTypeKey == 'leave.type_medical') {
-      int medicalBal = (_balances['medical'] is int) ? _balances['medical'] : 0;
-      if (medicalBal < days) {
-        _showSnack("leave.error_insufficient".tr(args: [days.toString(), medicalBal.toString()]));
-        return;
-      }
-    }
-
-    if (_leaveTypeKey == 'leave.type_medical' && _selectedFile == null) {
-      _showSnack("leave.error_upload_evidence".tr()); 
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw "User not authenticated";
-      }
-
-      bool isDuplicate = await _checkForDuplicateLeave(user.uid, _startDate!, _endDate!);
-      if (isDuplicate) {
-        _showSnack("You already have an approved leave for these dates.");
-        setState(() => _isLoading = false);
-        return;
-      }
-
-      String empCode = user.uid; 
-      String empName = 'Staff';
-      String empEmail = user.email ?? "no-email@system.com";
-
-      QuerySnapshot q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: user.uid).limit(1).get();
-      
-      if (q.docs.isNotEmpty) {
-        final userDoc = q.docs.first;
-        final userData = userDoc.data() as Map<String, dynamic>;
-        empCode = userDoc.id; 
-        empName = userData['personal']?['name'] ?? 'Staff';
-        empEmail = userData['personal']?['email'] ?? empEmail;
+      if (isStart) {
+        ref.read(leaveApplicationProvider.notifier).setDates(start: picked);
       } else {
-        throw "User profile not found in database";
+        ref.read(leaveApplicationProvider.notifier).setDates(end: picked);
       }
-
-      String? attachmentUrl;
-      String? fileType; 
-
-      if (_selectedFile != null && _selectedFile!.path != null) {
-        final String ext = _selectedFile!.extension ?? 'file';
-        final String fileName = '${DateTime.now().millisecondsSinceEpoch}_evidence.$ext';
-        
-        final Reference storageRef = FirebaseStorage.instance
-            .ref()
-            .child('leave_evidence')
-            .child(user.uid)
-            .child(fileName);
-        
-        File file = File(_selectedFile!.path!);
-        await storageRef.putFile(file);
-        
-        attachmentUrl = await storageRef.getDownloadURL();
-        fileType = ext; 
-      }
-
-      Map<String, dynamic> leaveData = {
-        'uid': empCode,
-        'authUid': user.uid,
-        'empName': empName,
-        'email': empEmail,
-        'type': _getStandardEnglishType(_leaveTypeKey),
-        'startDate': DateFormat('yyyy-MM-dd').format(_startDate!),
-        'endDate': DateFormat('yyyy-MM-dd').format(_endDate!),
-        'days': days, 
-        'reason': _reasonController.text.trim(),
-        'status': 'Pending',
-        'appliedAt': FieldValue.serverTimestamp(),
-        'isPayrollDeductible': (_leaveTypeKey == 'leave.type_unpaid'),
-      };
-
-      if (attachmentUrl != null) {
-        leaveData['attachmentUrl'] = attachmentUrl;
-        leaveData['fileType'] = fileType;
-      }
-
-      await FirebaseFirestore.instance.collection('leaves').add(leaveData);
-
-      if (mounted) {
-        _showSnack("leave.msg_submit_success".tr());
-        setState(() {
-          _startDate = null; 
-          _endDate = null; 
-          _selectedFile = null; 
-          _reasonController.clear();
-        });
-        DefaultTabController.of(context).animateTo(1);
-      }
-
-    } catch (e) {
-      if (mounted) _showSnack("Error: $e");
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
     }
   }
-
-  void _showSnack(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(leaveApplicationProvider);
+
+    // 🟢 监听 Controller 发出的弹窗消息
+    ref.listen<LeaveApplicationState>(leaveApplicationProvider, (previous, next) {
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        // 针对带参数的特殊翻译进行处理
+        String msg = next.errorMessage!;
+        if (msg == 'leave.error_insufficient') {
+           int days = ref.read(leaveApplicationProvider.notifier).calculateWorkingDays(next.startDate, next.endDate);
+           int bal = (next.balances[next.leaveTypeKey == 'leave.type_annual' ? 'annual' : 'medical'] as int?) ?? 0;
+           msg = msg.tr(args: [days.toString(), bal.toString()]);
+        } else {
+           msg = msg.tr();
+        }
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
+        ref.read(leaveApplicationProvider.notifier).clearMessages();
+      }
+
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!.tr()), backgroundColor: Colors.green));
+        _reasonController.clear();
+        // 自动切换到历史记录 Tab
+        DefaultTabController.of(context).animateTo(1);
+        ref.read(leaveApplicationProvider.notifier).clearMessages();
+      }
+    });
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -320,15 +105,15 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
             tabs: [Tab(text: "leave.tab_apply".tr()), Tab(text: "leave.tab_history".tr())],
           ),
         ),
-        body: TabBarView(children: [_buildApplyTab(), _buildHistoryTab()]),
+        body: TabBarView(children: [_buildApplyTab(context, state), _buildHistoryTab()]),
       ),
     );
   }
 
-  Widget _buildApplyTab() {
+  Widget _buildApplyTab(BuildContext context, LeaveApplicationState state) {
     bool isImage = false;
-    if (_selectedFile != null) {
-      final ext = _selectedFile!.extension?.toLowerCase();
+    if (state.selectedFile != null) {
+      final ext = state.selectedFile!.extension?.toLowerCase();
       isImage = ['jpg', 'jpeg', 'png'].contains(ext);
     }
 
@@ -344,47 +129,54 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
                 Expanded(
                   child: _buildBalanceCard(
                     title: "leave.type_annual".tr(),
-                    available: _balances['annual'] ?? 0,
-                    // 🟢 动态读取总额，如果未计算过显示 "-"
-                    total: _balances['total_annual']?.toString() ?? "-",
+                    available: state.balances['annual'] ?? 0,
+                    total: state.balances['total_annual']?.toString() ?? "-",
                     color: Colors.blue,
+                    isLoaded: state.balanceLoaded,
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: _buildBalanceCard(
                     title: "leave.type_medical".tr(),
-                    available: _balances['medical'] ?? 0,
-                    // 🟢 动态读取总额
-                    total: _balances['total_medical']?.toString() ?? "-",
+                    available: state.balances['medical'] ?? 0,
+                    total: state.balances['total_medical']?.toString() ?? "-",
                     color: Colors.orange,
+                    isLoaded: state.balanceLoaded,
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 24),
 
+            // 🟢 修复 deprecated_member_use 警告
             DropdownButtonFormField<String>(
-              initialValue: _leaveTypeKey,
+              key: ValueKey(state.leaveTypeKey), // 加上 Key 确保状态改变时自动重绘初始值
+              initialValue: state.leaveTypeKey,
               decoration: InputDecoration(labelText: "leave.field_type".tr(), border: const OutlineInputBorder()),
               items: _leaveTypeKeys.map((k) => DropdownMenuItem(value: k, child: Text(k.tr()))).toList(),
-              onChanged: (val) => setState(() => _leaveTypeKey = val!),
+              onChanged: (val) {
+                if (val != null) ref.read(leaveApplicationProvider.notifier).setLeaveType(val);
+              },
             ),
             const SizedBox(height: 16),
 
             Row(
               children: [
-                Expanded(child: _buildDatePicker(true, "leave.field_start".tr(), _startDate)),
+                Expanded(child: _buildDatePicker(context, true, "leave.field_start".tr(), state.startDate, state.endDate)),
                 const SizedBox(width: 10),
-                Expanded(child: _buildDatePicker(false, "leave.field_end".tr(), _endDate)),
+                Expanded(child: _buildDatePicker(context, false, "leave.field_end".tr(), state.startDate, state.endDate)),
               ],
             ),
             const SizedBox(height: 16),
 
-            if (_startDate != null && _endDate != null)
+            if (state.startDate != null && state.endDate != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: Text("leave.calculated_days".tr(args: [_calculateWorkingDays(_startDate!, _endDate!).toString()]), style: TextStyle(color: Colors.grey[700], fontStyle: FontStyle.italic, fontSize: 13)),
+                child: Text(
+                  "leave.calculated_days".tr(args: [ref.read(leaveApplicationProvider.notifier).calculateWorkingDays(state.startDate, state.endDate).toString()]), 
+                  style: TextStyle(color: Colors.grey[700], fontStyle: FontStyle.italic, fontSize: 13)
+                ),
               ),
 
             TextFormField(
@@ -395,7 +187,7 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
             ),
             const SizedBox(height: 16),
 
-            if (_leaveTypeKey == 'leave.type_medical') ...[
+            if (state.leaveTypeKey == 'leave.type_medical') ...[
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
@@ -416,7 +208,7 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
                     const SizedBox(height: 12),
                     
                     InkWell(
-                      onTap: _pickAttachment,
+                      onTap: () => ref.read(leaveApplicationProvider.notifier).pickAttachment(),
                       child: Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(vertical: 12),
@@ -424,13 +216,13 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
                           color: Colors.white,
                           border: Border.all(color: Colors.orange),
                           borderRadius: BorderRadius.circular(8),
-                          image: (isImage && _selectedFile?.path != null) ? DecorationImage(
-                            image: FileImage(File(_selectedFile!.path!)),
+                          image: (isImage && state.selectedFile?.path != null) ? DecorationImage(
+                            image: FileImage(File(state.selectedFile!.path!)),
                             fit: BoxFit.cover,
                             colorFilter: ColorFilter.mode(Colors.black.withValues(alpha: 0.3), BlendMode.darken)
                           ) : null
                         ),
-                        child: _selectedFile == null 
+                        child: state.selectedFile == null 
                           ? Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -452,15 +244,15 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
                             ),
                       ),
                     ),
-                    if (_selectedFile != null)
+                    if (state.selectedFile != null)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Expanded(child: Text(_selectedFile!.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey))),
+                            Expanded(child: Text(state.selectedFile!.name, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11, color: Colors.grey))),
                             TextButton(
-                              onPressed: () => setState(() => _selectedFile = null), 
+                              onPressed: () => ref.read(leaveApplicationProvider.notifier).removeAttachment(), 
                               style: TextButton.styleFrom(padding: EdgeInsets.zero, minimumSize: const Size(0,0), tapTargetSize: MaterialTapTargetSize.shrinkWrap),
                               child: Text("leave.btn_remove".tr(), style: const TextStyle(fontSize: 11, color: Colors.red))
                             )
@@ -480,8 +272,12 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
               height: 50,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-                onPressed: _isLoading ? null : _submitApplication,
-                child: _isLoading ? const CircularProgressIndicator(color: Colors.white) : Text("leave.btn_submit".tr()),
+                onPressed: state.isLoading ? null : () {
+                  if (_formKey.currentState!.validate()) {
+                    ref.read(leaveApplicationProvider.notifier).submitApplication(_reasonController.text.trim());
+                  }
+                },
+                child: state.isLoading ? const CircularProgressIndicator(color: Colors.white) : Text("leave.btn_submit".tr()),
               ),
             ),
           ],
@@ -490,12 +286,7 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
     );
   }
 
-  Widget _buildBalanceCard({
-    required String title, 
-    required int available, 
-    required String total, // 修改类型以支持传入 "-"
-    required MaterialColor color
-  }) {
+  Widget _buildBalanceCard({required String title, required int available, required String total, required MaterialColor color, required bool isLoaded}) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
@@ -506,37 +297,37 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            title.toUpperCase(), 
-            style: TextStyle(color: color[700], fontWeight: FontWeight.bold, fontSize: 11)
-          ),
+          Text(title.toUpperCase(), style: TextStyle(color: color[700], fontWeight: FontWeight.bold, fontSize: 11)),
           const SizedBox(height: 8),
-          _balanceLoaded 
+          isLoaded 
             ? Row(
                 crossAxisAlignment: CrossAxisAlignment.baseline,
                 textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Text(
-                    available.toString(), 
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 32, color: color[800])
-                  ),
-                  Text(
-                    " / $total", 
-                    style: TextStyle(fontSize: 14, color: color[600], fontWeight: FontWeight.w500)
-                  ),
+                  Text(available.toString(), style: TextStyle(fontWeight: FontWeight.bold, fontSize: 32, color: color[800])),
+                  Text(" / $total", style: TextStyle(fontSize: 14, color: color[600], fontWeight: FontWeight.w500)),
                 ],
               )
             : SizedBox(height: 38, child: Center(child: LinearProgressIndicator(color: color))),
           const SizedBox(height: 4),
-          Text(
-            "leave.days_remaining".tr(), 
-            style: const TextStyle(color: Colors.grey, fontSize: 11)
-          ),
+          Text("leave.days_remaining".tr(), style: const TextStyle(color: Colors.grey, fontSize: 11)),
         ],
       ),
     );
   }
 
+  Widget _buildDatePicker(BuildContext context, bool isStart, String label, DateTime? currentStart, DateTime? currentEnd) {
+    final val = isStart ? currentStart : currentEnd;
+    return InkWell(
+      onTap: () => _pickDate(context, isStart, currentStart, currentEnd),
+      child: InputDecorator(
+        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), suffixIcon: const Icon(Icons.calendar_today, size: 18)),
+        child: Text(val == null ? "-" : DateFormat('dd/MM/yyyy').format(val)),
+      ),
+    );
+  }
+
+  // ========== 历史记录 Tab ==========
   Widget _buildHistoryTab() {
     final user = FirebaseAuth.instance.currentUser;
     if(user == null) {
@@ -579,6 +370,8 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
             final bool isPdf = (data['fileType'] ?? '').toString().contains('pdf');
 
             String statusDisplay = status;
+            
+            // 🟢 修复 curly_braces_in_flow_control_structures 警告
             if (status == 'Pending') {
               statusDisplay = "leave.status_pending".tr();
             } else if (status == 'Approved') {
@@ -605,7 +398,15 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
                             if (hasAttachment)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8.0),
-                                child: Icon(isPdf ? Icons.picture_as_pdf : Icons.image, size: 16, color: Colors.blue),
+                                child: InkWell(
+                                  onTap: () async {
+                                    final Uri url = Uri.parse(data['attachmentUrl']);
+                                    if (await canLaunchUrl(url)) {
+                                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                                    }
+                                  },
+                                  child: Icon(isPdf ? Icons.picture_as_pdf : Icons.image, size: 18, color: Colors.blue),
+                                ),
                               )
                           ],
                         ),
@@ -635,16 +436,6 @@ class _LeaveApplicationScreenState extends State<LeaveApplicationScreen> {
           },
         );
       },
-    );
-  }
-
-  Widget _buildDatePicker(bool isStart, String label, DateTime? val) {
-    return InkWell(
-      onTap: () => _pickDate(isStart),
-      child: InputDecorator(
-        decoration: InputDecoration(labelText: label, border: const OutlineInputBorder(), suffixIcon: const Icon(Icons.calendar_today, size: 18)),
-        child: Text(val == null ? "-" : DateFormat('dd/MM/yyyy').format(val)),
-      ),
     );
   }
 }

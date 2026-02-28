@@ -1,12 +1,12 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
-class CorrectionRequestScreen extends StatefulWidget {
+// 🟢 引入控制器
+import 'correction_request_controller.dart';
+
+class CorrectionRequestScreen extends ConsumerStatefulWidget {
   final DateTime date;
   final String? attendanceId; 
   final String originalIn;
@@ -21,21 +21,16 @@ class CorrectionRequestScreen extends StatefulWidget {
   });
 
   @override
-  State<CorrectionRequestScreen> createState() => _CorrectionRequestScreenState();
+  ConsumerState<CorrectionRequestScreen> createState() => _CorrectionRequestScreenState();
 }
 
-class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
-  TimeOfDay? _reqIn;
-  TimeOfDay? _reqOut;
+class _CorrectionRequestScreenState extends ConsumerState<CorrectionRequestScreen> {
   final TextEditingController _remarksCtrl = TextEditingController();
-  bool _isLoading = false;
-
-  XFile? _selectedFile;
-  final ImagePicker _picker = ImagePicker();
 
   @override
-  void initState() {
-    super.initState();
+  void dispose() {
+    _remarksCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _selectTime(bool isIn) async {
@@ -44,95 +39,35 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
       initialTime: TimeOfDay.now(),
     );
     if (picked != null) {
-      setState(() {
-        if (isIn) {
-          _reqIn = picked;
-        } else {
-          _reqOut = picked;
-        }
-      });
-    }
-  }
-
-  Future<void> _pickImage() async {
-    try {
-      final XFile? picked = await _picker.pickImage(
-        source: ImageSource.gallery, 
-        imageQuality: 80
-      );
-      if (picked != null) {
-        setState(() => _selectedFile = picked);
+      if (isIn) {
+        ref.read(correctionProvider.notifier).setReqIn(picked);
+      } else {
+        ref.read(correctionProvider.notifier).setReqOut(picked);
       }
-    } catch (e) {
-      debugPrint("Error picking image: $e");
-    }
-  }
-
-  Future<void> _submitRequest() async {
-    // 至少需要选择一个新时间，或者填写备注
-    if (_reqIn == null && _reqOut == null && _remarksCtrl.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Please modify a time or add remarks.")));
-      return;
-    }
-
-    final String requestedInStr = _reqIn?.format(context) ?? widget.originalIn;
-    final String requestedOutStr = _reqOut?.format(context) ?? widget.originalOut;
-
-    setState(() => _isLoading = true);
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-
-    final dateStr = DateFormat('yyyy-MM-dd').format(widget.date);
-
-    try {
-      String? attachmentUrl;
-      // 上传图片证据
-      if (_selectedFile != null) {
-        final String fileName = '${DateTime.now().millisecondsSinceEpoch}_correction_${user.uid}.jpg';
-        final Reference storageRef = FirebaseStorage.instance
-            .ref()
-            .child('correction_evidence')
-            .child(user.uid)
-            .child(fileName);
-        
-        await storageRef.putFile(File(_selectedFile!.path));
-        attachmentUrl = await storageRef.getDownloadURL();
-      }
-
-      // 🛑 核心修改：写入独立的 'attendance_corrections' 集合
-      // 避免与 Admin 端的 "Profile Edit Requests" (edit_requests) 冲突
-      await FirebaseFirestore.instance.collection('attendance_corrections').add({
-        'uid': user.uid,
-        'email': user.email,
-        'type': 'attendance_correction', // 明确类型
-        'attendanceId': widget.attendanceId, // 关联原始考勤记录ID
-        'targetDate': dateStr,
-        'originalIn': widget.originalIn,
-        'originalOut': widget.originalOut,
-        'requestedIn': requestedInStr,
-        'requestedOut': requestedOutStr,
-        'remarks': _remarksCtrl.text,
-        'status': 'Pending', // 初始状态
-        'createdAt': FieldValue.serverTimestamp(),
-        'attachmentUrl': attachmentUrl,
-      });
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Correction Request Submitted!"), backgroundColor: Colors.green));
-        Navigator.pop(context);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(correctionProvider);
     final dateHeader = DateFormat('dd/MM/yyyy (EEEE)').format(widget.date);
+
+    // 🟢 监听 Controller 的消息与页面导航状态
+    ref.listen<CorrectionRequestState>(correctionProvider, (previous, next) {
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red));
+        ref.read(correctionProvider.notifier).clearMessages();
+      }
+
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green));
+        ref.read(correctionProvider.notifier).clearMessages();
+      }
+
+      if (next.shouldPop && !(previous?.shouldPop ?? false)) {
+        Navigator.pop(context);
+      }
+    });
 
     return Scaffold(
       appBar: AppBar(
@@ -167,9 +102,9 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
             const SizedBox(height: 10),
             Row(
               children: [
-                Expanded(child: _buildTimePicker("New Time In", _reqIn, true)),
+                Expanded(child: _buildTimePicker(context, "New Time In", state.reqIn, true)),
                 const SizedBox(width: 20),
-                Expanded(child: _buildTimePicker("New Time Out", _reqOut, false)),
+                Expanded(child: _buildTimePicker(context, "New Time Out", state.reqOut, false)),
               ],
             ),
 
@@ -196,7 +131,7 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
             const SizedBox(height: 8),
             
             GestureDetector(
-              onTap: _pickImage,
+              onTap: () => ref.read(correctionProvider.notifier).pickImage(),
               child: Container(
                 width: double.infinity,
                 height: 120,
@@ -204,14 +139,14 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
                   color: Colors.grey[100], 
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: Colors.grey[300]!, style: BorderStyle.solid),
-                  image: _selectedFile != null 
+                  image: state.selectedFile != null 
                     ? DecorationImage(
-                        image: FileImage(File(_selectedFile!.path)), 
+                        image: FileImage(File(state.selectedFile!.path)), 
                         fit: BoxFit.cover
                       ) 
                     : null
                 ),
-                child: _selectedFile == null 
+                child: state.selectedFile == null 
                   ? const Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
@@ -225,7 +160,7 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
                         Positioned(
                           top: 5, right: 5,
                           child: GestureDetector(
-                            onTap: () => setState(() => _selectedFile = null),
+                            onTap: () => ref.read(correctionProvider.notifier).removeImage(),
                             child: Container(
                               padding: const EdgeInsets.all(4),
                               decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
@@ -245,13 +180,22 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
               width: double.infinity,
               height: 50,
               child: ElevatedButton(
-                onPressed: _isLoading ? null : _submitRequest,
+                onPressed: state.isLoading ? null : () {
+                  ref.read(correctionProvider.notifier).submitRequest(
+                    context: context,
+                    targetDate: widget.date,
+                    attendanceId: widget.attendanceId,
+                    originalIn: widget.originalIn,
+                    originalOut: widget.originalOut,
+                    remarks: _remarksCtrl.text.trim(),
+                  );
+                },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF00C853), 
                   foregroundColor: Colors.white,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
-                child: _isLoading 
+                child: state.isLoading 
                   ? const CircularProgressIndicator(color: Colors.white) 
                   : const Text("SUBMIT REQUEST", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
@@ -272,7 +216,7 @@ class _CorrectionRequestScreenState extends State<CorrectionRequestScreen> {
     );
   }
 
-  Widget _buildTimePicker(String label, TimeOfDay? time, bool isIn) {
+  Widget _buildTimePicker(BuildContext context, String label, TimeOfDay? time, bool isIn) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
