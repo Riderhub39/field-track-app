@@ -1,31 +1,39 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:easy_localization/easy_localization.dart';
 
-class AnnouncementScreen extends StatelessWidget {
+// 🟢 引入 Provider
+import 'announcement_provider.dart';
+
+class AnnouncementScreen extends ConsumerWidget {
   const AnnouncementScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // 🟢 监听 StreamProvider 的异步状态
+    final announcementsAsyncValue = ref.watch(announcementsProvider);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Announcements"), // Add "announcement.title" to your translation files if needed
+        title: const Text("Announcements"), // Add "announcement.title".tr() if needed
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
         elevation: 0,
       ),
       backgroundColor: Colors.grey[50],
-      body: StreamBuilder<QuerySnapshot>(
-        stream: FirebaseFirestore.instance
-            .collection('announcements')
-            .orderBy('createdAt', descending: true)
-            .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+      body: announcementsAsyncValue.when(
+        // 加载中状态
+        loading: () => const Center(child: CircularProgressIndicator()),
+        
+        // 出错状态
+        error: (error, stackTrace) => Center(
+          child: Text('Error loading announcements: $error', style: const TextStyle(color: Colors.red)),
+        ),
+        
+        // 数据成功返回
+        data: (announcements) {
+          if (announcements.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -40,14 +48,15 @@ class AnnouncementScreen extends StatelessWidget {
 
           return ListView.separated(
             padding: const EdgeInsets.all(16),
-            itemCount: snapshot.data!.docs.length,
+            itemCount: announcements.length,
             separatorBuilder: (context, index) => const SizedBox(height: 12),
             itemBuilder: (context, index) {
-              final data = snapshot.data!.docs[index].data() as Map<String, dynamic>;
+              final data = announcements[index];
               final String message = data['message'] ?? '';
               final Timestamp? timestamp = data['createdAt'];
+              
               final String dateStr = timestamp != null 
-                  ? DateFormat('dd MMM yyyy, hh:mm a').format(timestamp.toDate()) 
+                  ? DateFormat('dd MMM yyyy, hh:mm a', context.locale.languageCode).format(timestamp.toDate()) 
                   : '';
 
               return Card(
@@ -67,7 +76,7 @@ class AnnouncementScreen extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.all(6),
                             decoration: BoxDecoration(
-                              color: Colors.orange.withValues(alpha:0.1),
+                              color: Colors.orange.withValues(alpha: 0.1),
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(Icons.campaign, color: Colors.orange, size: 16),

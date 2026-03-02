@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:easy_localization/easy_localization.dart';
 
-class ChangePasswordScreen extends StatefulWidget {
+// 🟢 引入控制器
+import 'change_password_controller.dart';
+
+class ChangePasswordScreen extends ConsumerStatefulWidget {
   const ChangePasswordScreen({super.key});
 
   @override
-  State<ChangePasswordScreen> createState() => _ChangePasswordScreenState();
+  ConsumerState<ChangePasswordScreen> createState() => _ChangePasswordScreenState();
 }
 
-class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
+class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
   final _formKey = GlobalKey<FormState>();
   
   // Controllers
@@ -17,82 +20,12 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
   final TextEditingController _newController = TextEditingController();
   final TextEditingController _confirmController = TextEditingController();
 
-  // Visibility State
-  bool _obscureCurrent = true;
-  bool _obscureNew = true;
-  bool _obscureConfirm = true;
-  bool _isLoading = false;
-
-  final FirebaseAuth _auth = FirebaseAuth.instance;
-
   @override
   void dispose() {
     _currentController.dispose();
     _newController.dispose();
     _confirmController.dispose();
     super.dispose();
-  }
-
-  // Submit Logic
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    setState(() => _isLoading = true);
-    final user = _auth.currentUser;
-
-    if (user == null || user.email == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Error: No user login.")));
-      setState(() => _isLoading = false);
-      return;
-    }
-
-    try {
-      // 1. Re-authenticate (Required for security sensitive operations)
-      AuthCredential credential = EmailAuthProvider.credential(
-        email: user.email!,
-        password: _currentController.text.trim(),
-      );
-      
-      await user.reauthenticateWithCredential(credential);
-
-      // 2. Update Password
-      await user.updatePassword(_newController.text.trim());
-
-      if (!mounted) return;
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('change_pw.success'.tr()), // Localized Success
-          backgroundColor: Colors.green
-        )
-      );
-      Navigator.pop(context); 
-
-    } on FirebaseAuthException catch (e) {
-      String msg = 'change_pw.error_generic'.tr(); // Default error
-      
-      if (e.code == 'wrong-password' || e.code == 'invalid-credential') {
-        msg = 'change_pw.error_wrong_curr'.tr();
-      } else if (e.code == 'weak-password') {
-        msg = 'register.pw_too_short'.tr(); // Reuse existing key
-      } else if (e.code == 'requires-recent-login') {
-        msg = 'change_pw.error_session'.tr();
-      }
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg), backgroundColor: Colors.red)
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red)
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
   }
 
   Widget _buildPasswordField({
@@ -111,7 +44,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
           controller: controller,
           obscureText: isObscure,
           decoration: InputDecoration(
-            hintText: label, // Simplified hint
+            hintText: label, 
             border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             suffixIcon: IconButton(
@@ -128,6 +61,27 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(changePasswordProvider);
+
+    // 🟢 监听状态改变以显示弹窗或关闭页面
+    ref.listen<ChangePasswordState>(changePasswordProvider, (previous, next) {
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        // 如果是国际化的 key 就翻译，否则直接显示 Error 内容
+        String msg = next.errorMessage!.contains('Error') ? next.errorMessage! : next.errorMessage!.tr();
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: Colors.red));
+        ref.read(changePasswordProvider.notifier).clearMessages();
+      }
+
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!.tr()), backgroundColor: Colors.green));
+        ref.read(changePasswordProvider.notifier).clearMessages();
+      }
+
+      if (next.shouldPop && !(previous?.shouldPop ?? false)) {
+        Navigator.pop(context);
+      }
+    });
+
     return Scaffold(
       appBar: AppBar(
         title: Text('settings.change_pw'.tr()),
@@ -166,8 +120,8 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
               _buildPasswordField(
                 label: 'change_pw.current_label'.tr(),
                 controller: _currentController,
-                isObscure: _obscureCurrent,
-                onToggle: () => setState(() => _obscureCurrent = !_obscureCurrent),
+                isObscure: state.obscureCurrent,
+                onToggle: () => ref.read(changePasswordProvider.notifier).toggleObscureCurrent(),
                 validator: (val) => (val == null || val.isEmpty) ? 'leave.error_required'.tr() : null,
               ),
 
@@ -175,8 +129,8 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
               _buildPasswordField(
                 label: 'change_pw.new_label'.tr(),
                 controller: _newController,
-                isObscure: _obscureNew,
-                onToggle: () => setState(() => _obscureNew = !_obscureNew),
+                isObscure: state.obscureNew,
+                onToggle: () => ref.read(changePasswordProvider.notifier).toggleObscureNew(),
                 validator: (val) {
                   if (val == null || val.length < 6) return 'register.pw_too_short'.tr();
                   if (val == _currentController.text) return 'change_pw.error_same'.tr();
@@ -188,8 +142,8 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
               _buildPasswordField(
                 label: 'change_pw.confirm_label'.tr(),
                 controller: _confirmController,
-                isObscure: _obscureConfirm,
-                onToggle: () => setState(() => _obscureConfirm = !_obscureConfirm),
+                isObscure: state.obscureConfirm,
+                onToggle: () => ref.read(changePasswordProvider.notifier).toggleObscureConfirm(),
                 validator: (val) {
                   if (val != _newController.text) return 'register.pw_mismatch'.tr();
                   return null;
@@ -202,13 +156,20 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen> {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: _isLoading ? null : _submit,
+                  onPressed: state.isLoading ? null : () {
+                    if (_formKey.currentState!.validate()) {
+                      ref.read(changePasswordProvider.notifier).submitPasswordChange(
+                        currentPassword: _currentController.text,
+                        newPassword: _newController.text,
+                      );
+                    }
+                  },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.blue,
                     foregroundColor: Colors.white,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  child: _isLoading 
+                  child: state.isLoading 
                     ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
                     : Text('change_pw.btn_submit'.tr(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                 ),

@@ -1,29 +1,26 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:easy_localization/easy_localization.dart';
-import '../services/biometric_service.dart';
 
-class BiometricGuard extends StatefulWidget {
+// 🟢 引入控制器
+import 'biometric_guard_controller.dart';
+
+class BiometricGuard extends ConsumerStatefulWidget {
   final Widget child;
 
   const BiometricGuard({super.key, required this.child});
 
   @override
-  State<BiometricGuard> createState() => _BiometricGuardState();
+  ConsumerState<BiometricGuard> createState() => _BiometricGuardState();
 }
 
-class _BiometricGuardState extends State<BiometricGuard> with WidgetsBindingObserver {
-  bool _isLocked = false; 
-  bool _isAuthenticating = false; 
-  bool _isEnabled = false; 
-  String _cachedName = "Staff"; // Default to "Staff"
-
+class _BiometricGuardState extends ConsumerState<BiometricGuard> with WidgetsBindingObserver {
+  
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _checkInitialStatus();
+    // Provider 的初始化已经在其构造函数中自动执行了 checkInitialStatus()
   }
 
   @override
@@ -32,94 +29,26 @@ class _BiometricGuardState extends State<BiometricGuard> with WidgetsBindingObse
     super.dispose();
   }
 
-  Future<void> _checkInitialStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    _isEnabled = prefs.getBool('biometric_enabled') ?? false;
-    
-    // Initial load of cached name
-    setState(() {
-      _cachedName = prefs.getString('cached_staff_name') ?? "Staff";
-    });
-
-    final user = FirebaseAuth.instance.currentUser;
-    // Only lock if enabled and user is logged in
-    if (_isEnabled && user != null) {
-      setState(() => _isLocked = true);
-      _authenticate();
-    }
-  }
-
   @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (_isAuthenticating) return;
-
-    if (state == AppLifecycleState.paused) {
-      _checkSettingsAndLock();
-    } else if (state == AppLifecycleState.resumed) {
-      if (_isLocked) {
-        _authenticate();
-      }
+  void didChangeAppLifecycleState(AppLifecycleState appState) {
+    if (appState == AppLifecycleState.paused) {
+      ref.read(biometricGuardProvider.notifier).handleAppPaused();
+    } else if (appState == AppLifecycleState.resumed) {
+      ref.read(biometricGuardProvider.notifier).handleAppResumed();
     }
-  }
-
-  Future<void> _checkSettingsAndLock() async {
-    final prefs = await SharedPreferences.getInstance();
-    _isEnabled = prefs.getBool('biometric_enabled') ?? false;
-    final user = FirebaseAuth.instance.currentUser;
-    
-    if (_isEnabled && user != null) {
-      setState(() => _isLocked = true);
-    }
-  }
-
-  Future<void> _authenticate() async {
-    // 🟢 KEY CHANGE: Refresh the cached name right before authentication
-    // This ensures that if HomeScreen just fetched the name, we show it here immediately.
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      setState(() {
-        _cachedName = prefs.getString('cached_staff_name') ?? "Staff";
-      });
-    }
-
-    _isAuthenticating = true;
-    try {
-      bool authenticated = await BiometricService().authenticateStaff();
-      if (mounted) {
-        setState(() {
-          // Success -> Unlock; Failure -> Keep locked
-          if (authenticated) _isLocked = false; 
-        });
-      }
-    } catch (e) {
-      debugPrint("Auth error: $e");
-    } finally {
-      // Delay slightly to prevent rapid-fire loop if auth fails instantly
-      await Future.delayed(const Duration(milliseconds: 500));
-      _isAuthenticating = false;
-    }
-  }
-
-  // Handle "Relogin" (Logout)
-  Future<void> _handleRelogin() async {
-    // 1. Unlock the guard (otherwise it might cover the LoginScreen)
-    setState(() => _isLocked = false);
-    
-    // 2. Sign out
-    await FirebaseAuth.instance.signOut();
-    
-    // The StreamBuilder in main.dart will detect the auth change and show LoginScreen
   }
 
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(biometricGuardProvider);
+
     return Stack(
       children: [
-        // 1. The actual app underneath
+        // 1. 底层实际的 App 界面
         widget.child,
 
-        // 2. The Lock Screen Overlay
-        if (_isLocked)
+        // 2. 锁定屏幕覆盖层
+        if (state.isLocked)
           Scaffold(
             backgroundColor: Colors.white,
             body: SafeArea(
@@ -151,7 +80,7 @@ class _BiometricGuardState extends State<BiometricGuard> with WidgetsBindingObse
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      _cachedName.toUpperCase(), // Displays the fresh cached name
+                      state.cachedName.toUpperCase(), 
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         fontSize: 26, 
@@ -170,7 +99,7 @@ class _BiometricGuardState extends State<BiometricGuard> with WidgetsBindingObse
                     const SizedBox(height: 20),
                     
                     GestureDetector(
-                      onTap: _authenticate, // Tap to retry
+                      onTap: () => ref.read(biometricGuardProvider.notifier).authenticate(),
                       child: Container(
                         padding: const EdgeInsets.all(20),
                         decoration: BoxDecoration(
@@ -195,7 +124,7 @@ class _BiometricGuardState extends State<BiometricGuard> with WidgetsBindingObse
 
                     // --- 4. Relogin Button ---
                     TextButton(
-                      onPressed: _handleRelogin,
+                      onPressed: () => ref.read(biometricGuardProvider.notifier).handleRelogin(),
                       child: Text(
                         "lock.relogin".tr(),
                         style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Color(0xFF15438c)),
