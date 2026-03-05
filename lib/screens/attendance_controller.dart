@@ -13,7 +13,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
-
+import '../services/time_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
@@ -218,7 +218,8 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
   // 🟢 实时后台监听今日打卡，不再在点击打卡时阻塞查询
   void _listenToTodayAttendance(String uid) {
-    final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final now = TimeService.now; 
+  final todayStr = DateFormat('yyyy-MM-dd').format(now);
 
     _attendanceSub = FirebaseFirestore.instance
         .collection('attendance')
@@ -415,7 +416,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
     final XFile photoFile = state.capturedPhoto!;
     final String action = state.selectedAction;
-    final DateTime actionTime = DateTime.now(); 
+    final DateTime actionTime = (TimeService.now); 
     final String uid = user.uid;
 
     try {

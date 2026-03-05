@@ -1,43 +1,52 @@
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_background_service/flutter_background_service.dart'; // 🟢 引入保活服务
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'notification_service.dart';
-
+import 'local_db_service.dart';
+import 'time_service.dart';
 final trackingProvider = NotifierProvider<TrackingNotifier, bool>(() {
   return TrackingNotifier();
 });
 
 class TrackingNotifier extends Notifier<bool> {
-  StreamSubscription<Position>? _positionStream;
   String? _currentUserId;
-  
-  Position? _lastUploadedPosition;
-  static const double _uploadDistanceFilter = 150.0;
+  Timer? _batchUploadTimer;
   Timer? _autoStopTimer;
 
-  double? _officeLat;
-  double? _officeLng;
-  double _officeRadius = 500.0;
-  bool? _wasInsideOffice;
-
-  static const String _prefLastLat = 'tracking_last_lat';
-  static const String _prefLastLng = 'tracking_last_lng';
+  static const Duration _uploadInterval = Duration(minutes: 15);
 
   @override
   bool build() {
+    _initServiceState();
     return false;
   }
 
-  /// 🔄 恢复会话 (App 启动时由 main.dart 或首页调用)
+  // 🟢 App 重启时，检查后台服务是否还在运行，同步 UI 状态
+  Future<void> _initServiceState() async {
+    final service = FlutterBackgroundService();
+    if (await service.isRunning()) {
+      final prefs = await SharedPreferences.getInstance();
+      _currentUserId = prefs.getString('current_tracking_uid');
+      if (_currentUserId != null) {
+        state = true;
+        _startBatchUploadTimer();
+      }
+    }
+  }
+
+  // ==========================================
+  // 1. 会话生命周期 (指挥官逻辑)
+  // ==========================================
+
   Future<void> resumeTrackingSession(String authUid) async {
     debugPrint("🔄 Attempting to resume tracking session for $authUid...");
-    
-    final now = DateTime.now();
-    final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final now = TimeService.now;
+  final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
     try {
       final attQuery = await FirebaseFirestore.instance
@@ -47,36 +56,27 @@ class TrackingNotifier extends Notifier<bool> {
           .get();
 
       if (attQuery.docs.isNotEmpty) {
-        // 🟢 核心修改：过滤掉所有被管理员拒绝的打卡记录
         final validDocs = attQuery.docs.where((doc) {
           final status = doc.data()['verificationStatus'];
           return status != 'Rejected' && status != 'Archived';
         }).toList();
 
         if (validDocs.isNotEmpty) {
-          // 按时间排序找最后一条“有效”记录
           validDocs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
           final lastSession = validDocs.last.data()['session'];
 
-          debugPrint("📍 Latest Valid State: $lastSession");
-
-          // 如果最后状态是上班中，且当前未在追踪，则强制恢复
           if ((lastSession == 'Clock In' || lastSession == 'Break In') && !state) {
-            debugPrint("✅ Resuming tracking because status is $lastSession");
             await startTracking(authUid, isResume: true);
           } else if (state && (lastSession == 'Clock Out' || lastSession == 'Break Out')) {
-            // 如果最后有效状态是下班/休息，但追踪还在跑（比如刚刚被Reject），则停止
-            debugPrint("🛑 Suspending tracking because status is $lastSession");
             await stopTracking();
           }
         }
       }
     } catch (e) {
-      debugPrint("❌ Failed to resume session: $e");
+      debugPrint("❌ Resume failed: $e");
     }
   }
 
-  /// ▶️ 开始追踪
   Future<void> startTracking(String userId, {bool isResume = false}) async {
     if (state && !isResume) return; 
 
@@ -86,257 +86,117 @@ class TrackingNotifier extends Notifier<bool> {
     }
 
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-      
       try {
-        final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: userId).limit(1).get();
-
-        if (userQuery.docs.isNotEmpty) {
-          final userData = userQuery.docs.first.data();
-          if (userData['isDriver'] != true) {
-            debugPrint("🚫 User is not a Driver.");
-            return; 
-          }
-        } else { return; }
-
-        // 二次验证状态（排除 Rejected）
-        final now = DateTime.now();
-        final todayStr = DateFormat('yyyy-MM-dd').format(now);
-        final attQuery = await FirebaseFirestore.instance
-            .collection('attendance')
-            .where('uid', isEqualTo: userId)
-            .where('date', isEqualTo: todayStr)
-            .get();
-
-        if (attQuery.docs.isNotEmpty) {
-          final validDocs = attQuery.docs.where((doc) {
-            final status = doc.data()['verificationStatus'];
-            return status != 'Rejected' && status != 'Archived';
-          }).toList();
-
-          if (validDocs.isNotEmpty) {
-            validDocs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
-            final lastSession = validDocs.last.data()['session'];
-
-            if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
-              debugPrint("🚫 Invalid state for tracking: $lastSession");
-              if (state) stopTracking();
-              return;
-            }
-          }
+        final userDocQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: userId).limit(1).get();
+        if (userDocQuery.docs.isEmpty || userDocQuery.docs.first.data()['isDriver'] != true) {
+          debugPrint("🚫 User is not a driver.");
+          return;
         }
+
+        _currentUserId = userId;
+        state = true;
+
+        // 🟢 1. 存入 SharedPreferences，供后台 Isolate 读取
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('current_tracking_uid', userId);
+
+        // 🟢 2. 发送指令：启动无坚不摧的后台服务！
+        final service = FlutterBackgroundService();
+        if (!(await service.isRunning())) {
+          await service.startService();
+        }
+
+        // 🟢 3. 启动前台的定时批量上传
+        _startBatchUploadTimer();
+        _scheduleAutoStop(userId);
+
+        debugPrint("🚀 Tracking Started (Background Isolate Activated)");
       } catch (e) {
-        debugPrint("Verification failed: $e");
-        return; 
+        debugPrint("❌ Start tracking failed: $e");
       }
-
-      await _fetchOfficeLocation();
-
-      _currentUserId = userId;
-      _wasInsideOffice = null; 
-      state = true; 
-
-      final prefs = await SharedPreferences.getInstance();
-      if (prefs.getBool('notifications_enabled') ?? true) {
-        await NotificationService().showTrackingNotification();
-      }
-
-      try {
-        Position initialPos = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high),
-        );
-
-        bool shouldForceUpload = true;
-
-        if (isResume) {
-          final double? savedLat = prefs.getDouble(_prefLastLat);
-          final double? savedLng = prefs.getDouble(_prefLastLng);
-
-          if (savedLat != null && savedLng != null) {
-            double distanceMoved = Geolocator.distanceBetween(
-              savedLat, savedLng,
-              initialPos.latitude, initialPos.longitude,
-            );
-
-            if (distanceMoved < _uploadDistanceFilter) {
-              shouldForceUpload = false;
-              _lastUploadedPosition = Position(
-                latitude: savedLat, longitude: savedLng,
-                timestamp: DateTime.now(), accuracy: 0, altitude: 0, heading: 0, speed: 0, speedAccuracy: 0, altitudeAccuracy: 0, headingAccuracy: 0
-              );
-              debugPrint("📍 Position stable (<150m).");
-            }
-          }
-        }
-
-        if (shouldForceUpload) {
-          await _uploadLocationAndCheckGeofence(initialPos, forceUpload: true);
-        }
-
-      } catch (e) {
-        debugPrint("Initial POS failed: $e");
-      }
-
-      late LocationSettings locationSettings;
-      if (defaultTargetPlatform == TargetPlatform.android) {
-        locationSettings = AndroidSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 20, 
-          forceLocationManager: true,
-          foregroundNotificationConfig: const ForegroundNotificationConfig(
-            notificationText: "FieldTrack is recording your location in the background.",
-            notificationTitle: "GPS Tracking Active",
-            enableWakeLock: true, 
-          ),
-        );
-      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
-        locationSettings = AppleSettings(
-          accuracy: LocationAccuracy.high,
-          activityType: ActivityType.automotiveNavigation,
-          distanceFilter: 20,
-          pauseLocationUpdatesAutomatically: false,
-          showBackgroundLocationIndicator: true,
-        );
-      } else {
-        locationSettings = const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 20);
-      }
-
-      _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings)
-          .listen((Position position) {
-        _uploadLocationAndCheckGeofence(position); 
-      });
-
-      _scheduleAutoStop(userId); 
     }
   }
 
   Future<void> stopTracking() async {
-    await _positionStream?.cancel();
-    _positionStream = null;
+    _batchUploadTimer?.cancel();
     _autoStopTimer?.cancel();
+    
+    // 🟢 1. 发送指令：停止后台服务
+    final service = FlutterBackgroundService();
+    service.invoke('stopService');
+
+    // 🟢 2. 补传最后一段轨迹，清空本地 SQLite
+    await _performBatchUpload();
+
+    // 🟢 3. 清理缓存
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('current_tracking_uid');
+
     _currentUserId = null;
-    _lastUploadedPosition = null;
-    _wasInsideOffice = null;
-    state = false; 
+    state = false;
     await NotificationService().cancelTrackingNotification();
     debugPrint("🛑 Tracking Stopped");
   }
 
-  Future<void> _fetchOfficeLocation() async {
-    try {
-      final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get();
-      if (doc.exists) {
-        final data = doc.data()!;
-        _officeLat = (data['latitude'] as num?)?.toDouble();
-        _officeLng = (data['longitude'] as num?)?.toDouble();
-        _officeRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
-      }
-    } catch (e) {
-      debugPrint("Office Loc Error: $e");
-    }
+  // ==========================================
+  // 2. 批量上传 (依然保留在前台进行打包)
+  // ==========================================
+
+  void _startBatchUploadTimer() {
+    _batchUploadTimer?.cancel();
+    _batchUploadTimer = Timer.periodic(_uploadInterval, (_) => _performBatchUpload());
   }
 
-  Future<void> _uploadLocationAndCheckGeofence(Position pos, {bool forceUpload = false}) async {
+  Future<void> _performBatchUpload() async {
     if (_currentUserId == null) return;
 
-    if (_officeLat != null && _officeLng != null) {
-      double distanceToOffice = Geolocator.distanceBetween(
-        pos.latitude, pos.longitude, _officeLat!, _officeLng!
-      );
+    // 从本地 SQLite 读取这段时间积累的点
+    final List<Map<String, dynamic>> localPoints = await LocalDbService().getUnuploadedLocations();
+    if (localPoints.isEmpty) return;
 
-      bool isInside = distanceToOffice <= _officeRadius;
+    debugPrint("📦 Batch Uploading ${localPoints.length} points to Firestore...");
 
-      // 🟢 移除了所有普通的进出提醒
-      if (_wasInsideOffice == true && !isInside) {
-        _checkIfForgotClockOut(); 
-      }
-      _wasInsideOffice = isInside; 
-    }
-
-    if (!forceUpload && _lastUploadedPosition != null) {
-      double distanceMoved = Geolocator.distanceBetween(
-        _lastUploadedPosition!.latitude, _lastUploadedPosition!.longitude,
-        pos.latitude, pos.longitude,
-      );
-      if (distanceMoved < _uploadDistanceFilter) return; 
-    }
-
-    final now = DateTime.now();
+    final now = TimeService.now;
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
-    final batch = FirebaseFirestore.instance.batch();
-
-    batch.set(FirebaseFirestore.instance.collection('tracking_logs').doc(), {
-      'uid': _currentUserId,
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'speed': pos.speed, 
-      'heading': pos.heading,
-      'timestamp': FieldValue.serverTimestamp(),
-      'date': todayStr,
-    });
-
-    batch.set(FirebaseFirestore.instance.collection('user_last_locations').doc(_currentUserId), {
-      'uid': _currentUserId,
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'speed': pos.speed,
-      'timestamp': FieldValue.serverTimestamp(),
-      'lastUpdate': now, 
-    });
+    final String batchDocId = "${_currentUserId}_${now.millisecondsSinceEpoch}";
 
     try {
-      await batch.commit();
-      _lastUploadedPosition = pos;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setDouble(_prefLastLat, pos.latitude);
-      await prefs.setDouble(_prefLastLng, pos.longitude);
+      await FirebaseFirestore.instance.collection('tracking_batches').doc(batchDocId).set({
+        'uid': _currentUserId,
+        'date': todayStr,
+        'uploadedAt': FieldValue.serverTimestamp(),
+        'points': localPoints.map((p) => {
+          'lat': p['latitude'],
+          'lng': p['longitude'],
+          'ts': p['timestamp'],
+        }).toList(),
+      });
+
+      // 成功后清理本地缓存
+      final List<int> ids = localPoints.map((p) => p['id'] as int).toList();
+      await LocalDbService().clearUploaded(ids);
+      
+      debugPrint("✅ Batch Upload Success");
     } catch (e) {
-      debugPrint("Firebase Upload Error: $e");
+      debugPrint("❌ Batch Upload Failed: $e");
     }
   }
 
-  Future<void> _checkIfForgotClockOut() async {
-    if (_currentUserId == null) return;
-    try {
-      final now = DateTime.now();
-      final todayStr = DateFormat('yyyy-MM-dd').format(now);
-      final schedSnap = await FirebaseFirestore.instance
-          .collection('schedules')
-          .where('userId', isEqualTo: _currentUserId)
-          .where('date', isEqualTo: todayStr)
-          .limit(1)
-          .get();
+  // ==========================================
+  // 3. 辅助函数
+  // ==========================================
 
-      if (schedSnap.docs.isNotEmpty) {
-        final shiftEnd = (schedSnap.docs.first.data()['end'] as Timestamp).toDate();
-        if (now.isAfter(shiftEnd)) {
-           await NotificationService().showForgotClockOutAlert();
-        }
-      }
-    } catch (e) {
-      debugPrint("Forgot check failed: $e");
-    }
-  }
+  Future<void> _scheduleAutoStop(String userId) async {
+    final now = TimeService.now;
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final schedSnap = await FirebaseFirestore.instance.collection('schedules').where('date', isEqualTo: todayStr).get();
+    var mySchedule = schedSnap.docs.where((doc) => doc.data()['userId'] == userId).toList();
 
-  Future<void> _scheduleAutoStop(String authUid) async {
-    try {
-      final now = DateTime.now();
-      final todayStr = DateFormat('yyyy-MM-dd').format(now);
-      final schedSnap = await FirebaseFirestore.instance.collection('schedules').where('date', isEqualTo: todayStr).get();
-      var mySchedule = schedSnap.docs.where((doc) => doc.data()['userId'] == authUid || doc.data()['userId'] == _currentUserId).toList();
+    DateTime stopAt = mySchedule.isNotEmpty 
+      ? (mySchedule.first.data()['end'] as Timestamp).toDate().add(const Duration(hours: 1))
+      : (TimeService.now).add(const Duration(hours: 12));
 
-      DateTime? forceStopTime;
-      if (mySchedule.isNotEmpty) {
-        Timestamp endTs = mySchedule.first.data()['end']; 
-        forceStopTime = endTs.toDate().add(const Duration(hours: 1)); 
-      } else {
-        forceStopTime = now.add(const Duration(hours: 12)); 
-      }
-
-      final duration = forceStopTime.difference(DateTime.now());
-      _autoStopTimer?.cancel();
-      _autoStopTimer = Timer(duration.isNegative ? const Duration(hours: 1) : duration, stopTracking);
-    } catch (e) {
-      debugPrint("Auto-stop timer error: $e");
-    }
+    _autoStopTimer?.cancel();
+    _autoStopTimer = Timer(stopAt.difference(TimeService.now), stopTracking);
   }
 }

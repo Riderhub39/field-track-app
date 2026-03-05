@@ -3,7 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:easy_localization/easy_localization.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart'; // 🟢 引入 Riverpod
-
+import 'services/time_service.dart';
 // 📦 Import Biometric Guard 
 import 'widgets/biometric_guard.dart'; 
 import 'services/background_service.dart';
@@ -28,8 +28,8 @@ void main() async {
 
   // 2. Initialize Notification Service (包含 FCM 初始化)
   await NotificationService().init();
-  await BackgroundService.initialize();
-  
+  await initializeBackgroundService();
+  await TimeService.syncTime();
   // 3. Initialize Localization
   await EasyLocalization.ensureInitialized();
 

@@ -7,7 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class RegisterState {
   final int currentStep; // 1: 验证身份, 2: 设置密码
@@ -71,7 +71,8 @@ class RegisterState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class RegisterController extends StateNotifier<RegisterState> {
+// 🔴 CHANGED: 迁移到 AutoDisposeNotifier
+class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
@@ -82,20 +83,21 @@ class RegisterController extends StateNotifier<RegisterState> {
   final String _templateId = 'template_njjb31f'; 
   final String _userId = 'yTP2W2IzGSKqHDqWa';
 
-  RegisterController() : super(RegisterState());
-
+  // 🔴 CHANGED: 使用 build 方法初始化并注册清理器
   @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  RegisterState build() {
+    ref.onDispose(() {
+      _timer?.cancel();
+    });
+    return RegisterState();
   }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   void resetOtpStatus() {
-    if (state.otpSent && mounted) {
+    if (state.otpSent) {
       state = state.copyWith(otpSent: false);
     }
   }
@@ -103,13 +105,11 @@ class RegisterController extends StateNotifier<RegisterState> {
   void _startCooldown() {
     state = state.copyWith(cooldownSeconds: 60);
     _timer?.cancel();
+    
+    // 🔴 CHANGED: 移除了定时器内的 mounted 检查，因为 onDispose 已经保证了页面销毁时定时器会被取消
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (mounted) { 
-        if (state.cooldownSeconds > 0) {
-          state = state.copyWith(cooldownSeconds: state.cooldownSeconds - 1);
-        } else {
-          timer.cancel();
-        }
+      if (state.cooldownSeconds > 0) {
+        state = state.copyWith(cooldownSeconds: state.cooldownSeconds - 1);
       } else {
         timer.cancel();
       }
@@ -175,9 +175,7 @@ class RegisterController extends StateNotifier<RegisterState> {
       await _sendEmailOtp(targetEmail, staffName, doc.id, data, isPhoneInput);
 
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(isLoading: false, errorMessage: e.toString());
-      }
+      state = state.copyWith(isLoading: false, errorMessage: e.toString());
     }
   }
 
@@ -199,8 +197,6 @@ class RegisterController extends StateNotifier<RegisterState> {
           },
         }),
       );
-      
-      if (!mounted) return; 
 
       if (response.statusCode == 200) {
         int atIndex = email.indexOf('@');
@@ -221,9 +217,7 @@ class RegisterController extends StateNotifier<RegisterState> {
         throw "Email Service Error.";
       }
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(isLoading: false, errorMessage: "Failed to send: $e");
-      }
+      state = state.copyWith(isLoading: false, errorMessage: "Failed to send: $e");
     }
   }
 
@@ -237,7 +231,6 @@ class RegisterController extends StateNotifier<RegisterState> {
     
     // 模拟一下延迟，增加一点 UI 反馈
     Future.delayed(const Duration(milliseconds: 500), () {
-      if (!mounted) return; 
       if (smsCode == state.expectedEmailOtp || smsCode == "123456") { 
         state = state.copyWith(
            currentStep: 2, 
@@ -258,16 +251,11 @@ class RegisterController extends StateNotifier<RegisterState> {
         if (_auth.currentUser != null) {
            await _auth.currentUser!.updatePassword(password);
         } else {
-           // 这里原本是发送重置邮件，既然已经通过 OTP 验证了，我们需要强制更改。
-           // 注意：如果未登录，Firebase 不允许直接通过 API 强改密码。
-           // 这里我们如果未登录且要重置，最安全的做法是提示已发送密码重置邮件给用户，或者使用 Admin SDK（不可在端侧）。
            await _auth.sendPasswordResetEmail(email: email);
-           if (mounted) {
-             state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
-             return; // 直接返回，等待关闭页面
-           }
+           state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
+           return; 
         }
-        if (mounted) state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
+        state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
       } else {
         UserCredential userCred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
         await _db.collection('users').doc(state.foundDocId).update({
@@ -276,17 +264,16 @@ class RegisterController extends StateNotifier<RegisterState> {
           'meta.isActivated': true,
         });
         await _auth.signOut();
-        if (mounted) state = state.copyWith(shouldPop: true, successMessage: "register.success_login");
+        
+        state = state.copyWith(shouldPop: true, successMessage: "register.success_login");
       }
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(isLoading: false, errorMessage: "Error: $e");
-      }
+      state = state.copyWith(isLoading: false, errorMessage: "Error: $e");
     }
   }
 }
 
-// 暴露 Provider
-final registerProvider = StateNotifierProvider.autoDispose<RegisterController, RegisterState>((ref) {
-  return RegisterController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final registerProvider = NotifierProvider.autoDispose<RegisterNotifier, RegisterState>(() {
+  return RegisterNotifier();
 });

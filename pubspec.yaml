@@ -24,7 +24,7 @@ dependencies:
   timezone: ^0.9.4
   shared_preferences: ^2.5.4
   flutter_timezone: ^3.0.1
-  flutter_background_service: ^5.0.0
+  flutter_background_service: ^5.1.0
   # Location and Maps
   geolocator: ^13.0.2
   geocoding: ^3.0.0
@@ -45,6 +45,7 @@ dependencies:
   image: ^4.1.7
   
   # Utilities
+  sqflite: ^2.4.1
   http: ^1.2.0
   url_launcher: ^6.3.0
   pdf: ^3.10.4
@@ -60,6 +61,8 @@ dependencies:
   firebase_messaging: ^15.2.10
   device_info_plus: ^12.3.0
   riverpod: ^2.4.9
+  firebase_database: ^11.3.10
+  ntp: ^2.0.0
   
 
 dev_dependencies:
