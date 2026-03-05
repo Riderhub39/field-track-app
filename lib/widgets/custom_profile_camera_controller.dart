@@ -5,11 +5,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:easy_localization/easy_localization.dart';
-import 'package:path_provider/path_provider.dart'; // 🟢 新增：用于网络图片下载
+import 'package:path_provider/path_provider.dart'; 
 import '../services/face_recognition_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class ProfileCameraState {
   final String statusText;
@@ -38,7 +38,7 @@ class ProfileCameraState {
     String? errorMessage,
     XFile? successImage,
     bool? showFailureDialog,
-    bool clearErrorMessage = false, // 🟢 新增：精确控制是否清空错误
+    bool clearErrorMessage = false, 
   }) {
     return ProfileCameraState(
       statusText: statusText ?? this.statusText,
@@ -55,7 +55,8 @@ class ProfileCameraState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class ProfileCameraController extends StateNotifier<ProfileCameraState> {
+// 🔴 CHANGED: 迁移到 AutoDisposeNotifier
+class ProfileCameraNotifier extends AutoDisposeNotifier<ProfileCameraState> {
   late final FaceDetector _faceDetector;
   final FaceRecognitionService _faceService = FaceRecognitionService();
   
@@ -63,8 +64,16 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
   DateTime _lastProcessTime = DateTime.now();
   bool _isProcessing = false;
 
-  ProfileCameraController() : super(ProfileCameraState()) {
+  // 🔴 CHANGED: 使用 build 方法初始化和注册清理逻辑
+  @override
+  ProfileCameraState build() {
     _initDetector();
+
+    ref.onDispose(() {
+      _faceDetector.close();
+    });
+
+    return ProfileCameraState(statusText: 'camera.align'.tr());
   }
 
   void _initDetector() {
@@ -77,7 +86,6 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
         minFaceSize: 0.15, 
       ),
     );
-    state = state.copyWith(statusText: 'camera.align'.tr());
   }
 
   // 🚀 核心修复：加入 Try-Catch-Finally 防止下载失败导致 UI 死锁
@@ -87,7 +95,7 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
     try {
       if (referencePath != null) {
         if (referencePath.startsWith('http') || referencePath.startsWith('https')) {
-          if (mounted) state = state.copyWith(statusText: "Loading Profile...");
+          state = state.copyWith(statusText: "Loading Profile...");
           
           final request = await HttpClient().getUrl(Uri.parse(referencePath));
           final response = await request.close();
@@ -106,21 +114,15 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
       }
     } catch (e) {
       debugPrint("Reference Initialization Error: $e");
-      if (mounted) state = state.copyWith(errorMessage: "Failed to load face data: $e");
+      state = state.copyWith(errorMessage: "Failed to load face data: $e");
     } finally {
-      if (mounted) state = state.copyWith(statusText: 'camera.align'.tr());
+      state = state.copyWith(statusText: 'camera.align'.tr());
     }
-  }
-
-  @override
-  void dispose() {
-    _faceDetector.close();
-    super.dispose();
   }
 
   // --- 实时视频流处理 ---
   Future<void> processImage(CameraImage image, CameraController controller) async {
-    if (state.isTakingPicture || _isProcessing || !mounted) return;
+    if (state.isTakingPicture || _isProcessing) return;
 
     // 🚀 性能优化：150ms 防抖节流，避免 CPU 过载
     if (DateTime.now().difference(_lastProcessTime).inMilliseconds < 150) {
@@ -134,8 +136,6 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
       if (inputImage == null) return;
 
       final faces = await _faceDetector.processImage(inputImage);
-      
-      if (!mounted) return;
 
       if (faces.isEmpty) {
         state = state.copyWith(statusText: 'camera.no_face'.tr(), statusColor: Colors.red, faceDetected: false);
@@ -211,11 +211,11 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
         await _performVerification(image, referencePath);
       } else {
         // 无比对模式，直接成功
-        if (mounted) state = state.copyWith(successImage: image);
+        state = state.copyWith(successImage: image);
       }
     } catch (e) {
       debugPrint('Capture error: $e');
-      if (mounted) state = state.copyWith(errorMessage: e.toString());
+      state = state.copyWith(errorMessage: e.toString());
       resetCameraState();
     }
   }
@@ -225,7 +225,6 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
 
     try {
       final result = await _faceService.compareFacesDetailed(referencePath, image);
-      if (!mounted) return;
 
       if (result.verified) {
         state = state.copyWith(successImage: image);
@@ -233,24 +232,23 @@ class ProfileCameraController extends StateNotifier<ProfileCameraState> {
         state = state.copyWith(showFailureDialog: true);
       }
     } catch (e) {
-       if (mounted) state = state.copyWith(errorMessage: e.toString());
+       state = state.copyWith(errorMessage: e.toString());
        resetCameraState();
     }
   }
 
   void resetCameraState() {
-    if (mounted) {
-      state = state.copyWith(
-        isTakingPicture: false,
-        statusText: 'camera.align'.tr(),
-        statusColor: Colors.white,
-        showFailureDialog: false,
-        clearErrorMessage: true,
-      );
-    }
+    state = state.copyWith(
+      isTakingPicture: false,
+      statusText: 'camera.align'.tr(),
+      statusColor: Colors.white,
+      showFailureDialog: false,
+      clearErrorMessage: true,
+    );
   }
 }
 
-final profileCameraProvider = StateNotifierProvider.autoDispose<ProfileCameraController, ProfileCameraState>((ref) {
-  return ProfileCameraController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final profileCameraProvider = NotifierProvider.autoDispose<ProfileCameraNotifier, ProfileCameraState>(() {
+  return ProfileCameraNotifier();
 });

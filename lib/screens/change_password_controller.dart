@@ -2,7 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class ChangePasswordState {
   final bool obscureCurrent;
@@ -50,25 +50,31 @@ class ChangePasswordState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class ChangePasswordController extends StateNotifier<ChangePasswordState> {
+// 🔴 CHANGED: 迁移到 AutoDisposeNotifier
+class ChangePasswordNotifier extends AutoDisposeNotifier<ChangePasswordState> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-  ChangePasswordController() : super(ChangePasswordState());
+  // 🔴 CHANGED: 使用 build 方法提供初始状态
+  @override
+  ChangePasswordState build() {
+    return ChangePasswordState();
+  }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    // 🔴 CHANGED: 彻底移除所有 mounted 检查
+    state = state.copyWith(clearMessages: true);
   }
 
   void toggleObscureCurrent() {
-    if (mounted) state = state.copyWith(obscureCurrent: !state.obscureCurrent);
+    state = state.copyWith(obscureCurrent: !state.obscureCurrent);
   }
 
   void toggleObscureNew() {
-    if (mounted) state = state.copyWith(obscureNew: !state.obscureNew);
+    state = state.copyWith(obscureNew: !state.obscureNew);
   }
 
   void toggleObscureConfirm() {
-    if (mounted) state = state.copyWith(obscureConfirm: !state.obscureConfirm);
+    state = state.copyWith(obscureConfirm: !state.obscureConfirm);
   }
 
   Future<void> submitPasswordChange({
@@ -80,7 +86,7 @@ class ChangePasswordController extends StateNotifier<ChangePasswordState> {
     final user = _auth.currentUser;
 
     if (user == null || user.email == null) {
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: "Error: No user login.");
+      state = state.copyWith(isLoading: false, errorMessage: "Error: No user login.");
       return;
     }
 
@@ -96,13 +102,12 @@ class ChangePasswordController extends StateNotifier<ChangePasswordState> {
       // 2. Update Password
       await user.updatePassword(newPassword.trim());
 
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          successMessage: "change_pw.success", // locale key
-          shouldPop: true,
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        successMessage: "change_pw.success", // locale key
+        shouldPop: true,
+      );
+      
     } on FirebaseAuthException catch (e) {
       String msg = 'change_pw.error_generic'; // locale key
       
@@ -114,24 +119,20 @@ class ChangePasswordController extends StateNotifier<ChangePasswordState> {
         msg = 'change_pw.error_session';
       }
       
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          errorMessage: msg,
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: msg,
+      );
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          errorMessage: "Error: $e",
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: "Error: $e",
+      );
     }
   }
 }
 
-// 暴露 Provider
-final changePasswordProvider = StateNotifierProvider.autoDispose<ChangePasswordController, ChangePasswordState>((ref) {
-  return ChangePasswordController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final changePasswordProvider = NotifierProvider.autoDispose<ChangePasswordNotifier, ChangePasswordState>(() {
+  return ChangePasswordNotifier();
 });

@@ -9,6 +9,9 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:path_provider/path_provider.dart';
 import '../services/face_recognition_service.dart';
 
+// ==========================================
+// 1. 状态定义 (State) - 保持不变
+// ==========================================
 class FaceCameraState {
   final String statusText;
   final Color statusColor;
@@ -62,7 +65,11 @@ class FaceCameraState {
   }
 }
 
-class FaceCameraController extends StateNotifier<FaceCameraState> {
+// ==========================================
+// 2. 逻辑控制器 (Controller)
+// ==========================================
+// 🔴 CHANGED: 迁移到 AutoDisposeNotifier
+class FaceCameraNotifier extends AutoDisposeNotifier<FaceCameraState> {
   late final FaceDetector _faceDetector;
   final FaceRecognitionService _faceService = FaceRecognitionService();
   String? _referencePath;
@@ -70,8 +77,16 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
   DateTime _lastProcessTime = DateTime.now();
   bool _isProcessingFrame = false;
 
-  FaceCameraController() : super(FaceCameraState()) {
+  // 🔴 CHANGED: 使用 build 方法初始化和注册清理逻辑
+  @override
+  FaceCameraState build() {
     _initDetector();
+
+    ref.onDispose(() {
+      _faceDetector.close();
+    });
+
+    return FaceCameraState(statusText: 'camera.align'.tr());
   }
 
   void _initDetector() {
@@ -84,7 +99,6 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
         minFaceSize: 0.15, 
       ),
     );
-    state = state.copyWith(statusText: 'camera.align'.tr());
   }
 
   Future<void> prepareReference(String? path) async {
@@ -95,7 +109,7 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
       
       if (path != null) {
         if (path.startsWith('http') || path.startsWith('https')) {
-          if (mounted) state = state.copyWith(statusText: "Loading Profile...");
+          state = state.copyWith(statusText: "Loading Profile...");
           
           // 🚀 增加 15 秒超时控制，避免弱网导致的永久死锁
           final request = await HttpClient().getUrl(Uri.parse(path)).timeout(const Duration(seconds: 15));
@@ -117,25 +131,17 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
       }
     } catch (e) {
       debugPrint("Reference Initialization Error: $e");
-      if (mounted) state = state.copyWith(errorMessage: "Failed to load face data: $e");
+      state = state.copyWith(errorMessage: "Failed to load face data: $e");
     } finally {
-      if (mounted) {
-        state = state.copyWith(
-          isLoadingReference: false,
-          statusText: 'camera.align'.tr(),
-        );
-      }
+      state = state.copyWith(
+        isLoadingReference: false,
+        statusText: 'camera.align'.tr(),
+      );
     }
   }
 
-  @override
-  void dispose() {
-    _faceDetector.close();
-    super.dispose();
-  }
-
   Future<void> processImage(CameraImage image, CameraController controller) async {
-    if (state.isLoadingReference || _isProcessingFrame || state.isVerifying || !mounted) return;
+    if (state.isLoadingReference || _isProcessingFrame || state.isVerifying) return;
 
     if (DateTime.now().difference(_lastProcessTime).inMilliseconds < 150) {
       return;
@@ -148,7 +154,6 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
       if (inputImage == null) return;
 
       final faces = await _faceDetector.processImage(inputImage);
-      if (!mounted) return;
 
       if (faces.isEmpty) {
         if (state.step != 0 && !state.hasCaptured) {
@@ -196,9 +201,7 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
 
   void _updateUI({required String status, required Color color, required int step}) {
     if (state.statusText != status || state.statusColor != color || state.step != step) {
-      if (mounted) {
-        state = state.copyWith(statusText: status, statusColor: color, step: step);
-      }
+      state = state.copyWith(statusText: status, statusColor: color, step: step);
     }
   }
 
@@ -249,13 +252,12 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
       await controller.stopImageStream();
       final image = await controller.takePicture();
       
-      if (mounted) {
-        state = state.copyWith(
-          hasCaptured: true,
-          step: 1,
-          tempCapturedImage: image,
-        );
-      }
+      state = state.copyWith(
+        hasCaptured: true,
+        step: 1,
+        tempCapturedImage: image,
+      );
+      
       await controller.startImageStream((img) => processImage(img, controller));
     } catch (e) {
       debugPrint("Silent capture error: $e");
@@ -266,26 +268,22 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
   Future<void> _startVerificationProcess(CameraController controller) async {
     if (state.isVerifying || state.tempCapturedImage == null) return;
     
-    if (mounted) {
-      state = state.copyWith(
-        isVerifying: true,
-        step: 2,
-        statusText: 'camera.verifying'.tr(),
-        statusColor: Colors.blue,
-      );
-    }
+    state = state.copyWith(
+      isVerifying: true,
+      step: 2,
+      statusText: 'camera.verifying'.tr(),
+      statusColor: Colors.blue,
+    );
 
     try {
       await controller.stopImageStream(); 
 
       if (_referencePath == null) {
-        if (mounted) state = state.copyWith(successImage: state.tempCapturedImage);
+        state = state.copyWith(successImage: state.tempCapturedImage);
         return;
       }
 
       VerifyResult result = await _faceService.compareFacesDetailed(_referencePath!, state.tempCapturedImage!);
-
-      if (!mounted) return;
 
       if (result.verified) {
         state = state.copyWith(successImage: state.tempCapturedImage);
@@ -303,7 +301,6 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
   }
 
   void resetCameraState(CameraController? controller) async {
-    if (!mounted) return;
     state = FaceCameraState(
       statusText: 'camera.align'.tr(),
       statusColor: Colors.white,
@@ -320,6 +317,7 @@ class FaceCameraController extends StateNotifier<FaceCameraState> {
   }
 }
 
-final faceCameraProvider = StateNotifierProvider.autoDispose<FaceCameraController, FaceCameraState>((ref) {
-  return FaceCameraController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final faceCameraProvider = NotifierProvider.autoDispose<FaceCameraNotifier, FaceCameraState>(() {
+  return FaceCameraNotifier();
 });

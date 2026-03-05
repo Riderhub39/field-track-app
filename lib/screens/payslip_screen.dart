@@ -42,20 +42,29 @@ class _PayslipScreenState extends ConsumerState<PayslipScreen> {
 
     // 🟢 监听状态改变以显示弹窗或切换 Tab
     ref.listen<PayslipState>(payslipProvider, (previous, next) {
+      // 监听错误消息
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red),
+        );
         ref.read(payslipProvider.notifier).clearMessages();
       }
 
+      // 监听成功消息
       if (next.successMessage != null && next.successMessage != previous?.successMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green));
-        // 清空表单
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green),
+        );
+        
+        // 成功后清空表单
         _amountCtrl.clear();
         _reasonCtrl.clear();
         setState(() => _agreedToDeduction = false);
+        
         ref.read(payslipProvider.notifier).clearMessages();
       }
 
+      // 监听 Tab 切换指令 (提交申请成功后切回记录列表)
       if (next.shouldSwitchToDocumentsTab && !(previous?.shouldSwitchToDocumentsTab ?? false)) {
         DefaultTabController.of(context).animateTo(0);
         ref.read(payslipProvider.notifier).clearTabSwitch();
@@ -291,13 +300,27 @@ class _PayslipScreenState extends ConsumerState<PayslipScreen> {
   Widget _buildAdvanceRecordCard(Map<String, dynamic> data) {
     final amount = (data['amount'] ?? 0).toDouble();
     final status = data['status'] ?? 'Pending';
+    final isTransferred = data['isTransferred'] == true; // 🟢 判断是否已转账
+    
     final dateStr = data['appliedAt'] != null 
         ? DateFormat('dd MMM yyyy').format((data['appliedAt'] as Timestamp).toDate()) 
         : '-';
     
     Color statusColor = Colors.orange;
-    if (status == 'Approved') statusColor = Colors.green;
-    if (status == 'Rejected') statusColor = Colors.red;
+    String displayStatus = status;
+
+    // 🟢 细化状态展示
+    if (status == 'Approved') {
+      if (isTransferred) {
+        statusColor = Colors.teal; // 青色表示钱已到账
+        displayStatus = 'Transferred';
+      } else {
+        statusColor = Colors.green; // 绿色表示已批准，等待财务打钱
+        displayStatus = 'Awaiting Transfer';
+      }
+    } else if (status == 'Rejected') {
+      statusColor = Colors.red;
+    }
 
     return Card(
       elevation: 0,
@@ -318,7 +341,7 @@ class _PayslipScreenState extends ConsumerState<PayslipScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(color: statusColor.withValues(alpha:0.1), borderRadius: BorderRadius.circular(6)),
-              child: Text(status, style: TextStyle(color: statusColor, fontSize: 12, fontWeight: FontWeight.bold)),
+              child: Text(displayStatus, style: TextStyle(color: statusColor, fontSize: 12, fontWeight: FontWeight.bold)),
             ),
             if (data['pdfUrl'] != null) ...[
               const SizedBox(width: 8),

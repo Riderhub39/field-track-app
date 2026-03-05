@@ -13,7 +13,7 @@ import 'package:image/image.dart' as img;
 import 'package:gal/gal.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class CameraScreenState {
   final String address;
@@ -61,18 +61,21 @@ class CameraScreenState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class CameraScreenController extends StateNotifier<CameraScreenState> {
+// 🔴 CHANGED: 迁移至 AutoDisposeNotifier
+class CameraScreenNotifier extends AutoDisposeNotifier<CameraScreenState> {
   Timer? _timer;
 
-  CameraScreenController() : super(CameraScreenState()) {
+  // 🔴 CHANGED: 使用 build 方法初始化和清理
+  @override
+  CameraScreenState build() {
     _initData();
     _startClock();
-  }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+    ref.onDispose(() {
+      _timer?.cancel();
+    });
+
+    return CameraScreenState();
   }
 
   void _startClock() {
@@ -81,9 +84,7 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
   }
 
   void _updateTime() {
-    if (mounted) {
-      state = state.copyWith(dateTimeStr: DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()));
-    }
+    state = state.copyWith(dateTimeStr: DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()));
   }
 
   Future<void> _initData() async {
@@ -99,14 +100,15 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
           final data = q.docs.first.data();
           final dynamic personal = data['personal'];
           String name = (personal is Map && personal['name'] != null) ? personal['name'] : (data['name'] ?? "Staff");
-          if (mounted) state = state.copyWith(staffName: name);
+          
+          state = state.copyWith(staffName: name);
           return;
         }
       } catch (e) {
         debugPrint("Error fetching staff name: $e");
       }
     }
-    if (mounted) state = state.copyWith(staffName: "Unknown Staff");
+    state = state.copyWith(staffName: "Unknown Staff");
   }
 
   Future<void> _initLocationAndAddress() async {
@@ -118,10 +120,11 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
         String fullAddress = [p.street, p.subLocality, p.locality, p.postalCode, p.administrativeArea]
             .where((e) => e != null && e.toString().isNotEmpty)
             .join(', ');
-        if (mounted) state = state.copyWith(address: fullAddress.isEmpty ? "Unknown Address" : fullAddress);
+            
+        state = state.copyWith(address: fullAddress.isEmpty ? "Unknown Address" : fullAddress);
       }
     } catch (e) {
-      if (mounted) state = state.copyWith(address: "Location Error");
+      state = state.copyWith(address: "Location Error");
     }
   }
 
@@ -140,12 +143,10 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
       final XFile rawImage = await cameraController.takePicture();
 
       // 2. 拍完立刻释放快门，允许用户继续点击下一张连拍
-      if (mounted) {
-        state = state.copyWith(
-          isProcessing: false, 
-          captureCount: state.captureCount + 1 // 触发 UI 的 Toast 提示
-        );
-      }
+      state = state.copyWith(
+        isProcessing: false, 
+        captureCount: state.captureCount + 1 // 触发 UI 的 Toast 提示
+      );
 
       // 3. 把耗时的加水印和网络上传剥离，丢进后台不管它（不用 await）
       _processAndUploadInBackground(
@@ -157,7 +158,7 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
       );
 
     } catch (e) {
-      if (mounted) state = state.copyWith(isProcessing: false, errorMessage: "Capture failed: ${e.toString()}");
+      state = state.copyWith(isProcessing: false, errorMessage: "Capture failed: ${e.toString()}");
     }
   }
 
@@ -205,12 +206,13 @@ class CameraScreenController extends StateNotifier<CameraScreenState> {
   }
 }
 
-final cameraScreenProvider = StateNotifierProvider.autoDispose<CameraScreenController, CameraScreenState>((ref) {
-  return CameraScreenController();
+// 🔴 CHANGED: 暴露 Provider
+final cameraScreenProvider = NotifierProvider.autoDispose<CameraScreenNotifier, CameraScreenState>(() {
+  return CameraScreenNotifier();
 });
 
 // ==========================================
-// 3. 后台 Isolate 水印处理与极致压缩
+// 3. 后台 Isolate 水印处理与极致压缩 - 保持不变
 // ==========================================
 class _WatermarkArgs {
   final String inputPath;
