@@ -7,7 +7,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../services/biometric_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class BiometricGuardState {
   final bool isLocked;
@@ -32,11 +32,16 @@ class BiometricGuardState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class BiometricGuardController extends StateNotifier<BiometricGuardState> {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 Notifier
+class BiometricGuardNotifier extends Notifier<BiometricGuardState> {
   bool _isAuthenticating = false;
 
-  BiometricGuardController() : super(BiometricGuardState()) {
+  // 🔴 CHANGED: 使用 build 方法进行初始化
+  @override
+  BiometricGuardState build() {
+    // 异步检查初始状态，不阻塞 UI 渲染
     checkInitialStatus();
+    return BiometricGuardState();
   }
 
   // 初始检查
@@ -45,14 +50,13 @@ class BiometricGuardController extends StateNotifier<BiometricGuardState> {
     bool isEnabled = prefs.getBool('biometric_enabled') ?? false;
     String name = prefs.getString('cached_staff_name') ?? "Staff";
     
-    if (mounted) {
-      state = state.copyWith(cachedName: name);
-    }
+    // 🔴 CHANGED: 移除 mounted 检查
+    state = state.copyWith(cachedName: name);
 
     final user = FirebaseAuth.instance.currentUser;
     // 只有在开启了生物识别并且已登录的状态下才上锁
     if (isEnabled && user != null) {
-      if (mounted) state = state.copyWith(isLocked: true);
+      state = state.copyWith(isLocked: true);
       authenticate();
     }
   }
@@ -66,7 +70,7 @@ class BiometricGuardController extends StateNotifier<BiometricGuardState> {
     final user = FirebaseAuth.instance.currentUser;
     
     if (isEnabled && user != null) {
-      if (mounted) state = state.copyWith(isLocked: true);
+      state = state.copyWith(isLocked: true);
     }
   }
 
@@ -85,16 +89,12 @@ class BiometricGuardController extends StateNotifier<BiometricGuardState> {
 
     // 每次验证前刷新一下缓存的名字 (防止首页刚刚更改了名字)
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) {
-      state = state.copyWith(cachedName: prefs.getString('cached_staff_name') ?? "Staff");
-    }
+    state = state.copyWith(cachedName: prefs.getString('cached_staff_name') ?? "Staff");
 
     try {
       bool authenticated = await BiometricService().authenticateStaff();
-      if (mounted) {
-        if (authenticated) {
-          state = state.copyWith(isLocked: false);
-        }
+      if (authenticated) {
+        state = state.copyWith(isLocked: false);
       }
     } catch (e) {
       debugPrint("Auth error: $e");
@@ -108,14 +108,14 @@ class BiometricGuardController extends StateNotifier<BiometricGuardState> {
   // 处理重新登录 (登出)
   Future<void> handleRelogin() async {
     // 1. 先解锁遮罩，防止它盖住 LoginScreen
-    if (mounted) state = state.copyWith(isLocked: false);
+    state = state.copyWith(isLocked: false);
     
-    // 2. 执行登出 (main.dart 中的 StreamBuilder 会自动捕获并跳转登录页)
+    // 2. 执行登出 (main.dart 中的 StreamBuilder/Provider 会自动捕获并跳转登录页)
     await FirebaseAuth.instance.signOut();
   }
 }
 
-// 暴露 Provider
-final biometricGuardProvider = StateNotifierProvider<BiometricGuardController, BiometricGuardState>((ref) {
-  return BiometricGuardController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final biometricGuardProvider = NotifierProvider<BiometricGuardNotifier, BiometricGuardState>(() {
+  return BiometricGuardNotifier();
 });

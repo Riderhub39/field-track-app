@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../services/notification_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class SettingsState {
   final bool isLoading;
@@ -38,30 +38,33 @@ class SettingsState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class SettingsController extends StateNotifier<SettingsState> {
-  SettingsController() : super(SettingsState()) {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class SettingsNotifier extends AutoDisposeNotifier<SettingsState> {
+  
+  // 🔴 CHANGED: 使用 build 方法初始化
+  @override
+  SettingsState build() {
+    // 异步加载设置数据
     _loadSettings();
+    return SettingsState(isLoading: true);
   }
 
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     
-    if (mounted) {
-      state = state.copyWith(
-        notificationsEnabled: prefs.getBool('notifications_enabled') ?? true,
-        biometricEnabled: prefs.getBool('biometric_enabled') ?? false,
-        isLoading: false,
-      );
-    }
+    // 🔴 CHANGED: 移除了 mounted 检查，直接修改 state
+    state = state.copyWith(
+      notificationsEnabled: prefs.getBool('notifications_enabled') ?? true,
+      biometricEnabled: prefs.getBool('biometric_enabled') ?? false,
+      isLoading: false,
+    );
   }
 
   Future<void> toggleNotifications(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('notifications_enabled', value);
     
-    if (mounted) {
-      state = state.copyWith(notificationsEnabled: value);
-    }
+    state = state.copyWith(notificationsEnabled: value);
 
     if (!value) {
       NotificationService().cancelAllReminders(); 
@@ -72,21 +75,18 @@ class SettingsController extends StateNotifier<SettingsState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('biometric_enabled', value);
     
-    if (mounted) {
-      state = state.copyWith(biometricEnabled: value);
-    }
+    state = state.copyWith(biometricEnabled: value);
   }
 
   Future<void> logout() async {
     NotificationService().stopListening();
     await FirebaseAuth.instance.signOut();
-    if (mounted) {
-      state = state.copyWith(isLoggedOut: true);
-    }
+    
+    state = state.copyWith(isLoggedOut: true);
   }
 }
 
-// 暴露 Provider
-final settingsProvider = StateNotifierProvider.autoDispose<SettingsController, SettingsState>((ref) {
-  return SettingsController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final settingsProvider = NotifierProvider.autoDispose<SettingsNotifier, SettingsState>(() {
+  return SettingsNotifier();
 });

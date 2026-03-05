@@ -19,7 +19,7 @@ import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class AttendanceState {
   // 用户数据
@@ -131,18 +131,22 @@ class AttendanceState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class AttendanceController extends StateNotifier<AttendanceState> {
-  final Ref ref;
+// 🔴 CHANGED: 迁移到 Notifier (保持与原版一样非 autoDispose 的生命周期)
+class AttendanceNotifier extends Notifier<AttendanceState> {
   StreamSubscription? _attendanceSub;
 
-  AttendanceController(this.ref) : super(AttendanceState()) {
-    _initAll();
-  }
-
+  // 🔴 CHANGED: 使用 build 方法初始化
   @override
-  void dispose() {
-    _attendanceSub?.cancel();
-    super.dispose();
+  AttendanceState build() {
+    // 异步初始化
+    _initAll();
+    
+    // 🔴 CHANGED: 注册资源清理
+    ref.onDispose(() {
+      _attendanceSub?.cancel();
+    });
+
+    return AttendanceState();
   }
 
   Future<void> _initAll() async {
@@ -184,19 +188,18 @@ class AttendanceController extends StateNotifier<AttendanceState> {
           }
         }
         
-        if (mounted) {
-          state = state.copyWith(
-            staffName: sName,
-            employeeId: eId,
-            myEmpCode: docId,
-            appBarImage: appImage,
-            referenceFaceIdPath: refFacePath,
-            isFetchingUser: false,
-          );
-        }
+        // 🔴 CHANGED: 移除 mounted
+        state = state.copyWith(
+          staffName: sName,
+          employeeId: eId,
+          myEmpCode: docId,
+          appBarImage: appImage,
+          referenceFaceIdPath: refFacePath,
+          isFetchingUser: false,
+        );
       }
     } catch (e) {
-      if (mounted) state = state.copyWith(isFetchingUser: false);
+      state = state.copyWith(isFetchingUser: false);
     }
   }
 
@@ -224,8 +227,7 @@ class AttendanceController extends StateNotifier<AttendanceState> {
         .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
         .snapshots()
         .listen((snapshot) {
-      if (!mounted) return;
-
+      
       String inT = "--:--";
       String outT = "--:--";
       String? lastSess;
@@ -267,16 +269,14 @@ class AttendanceController extends StateNotifier<AttendanceState> {
       if (pos != null) {
         final latLng = LatLng(pos.latitude, pos.longitude);
         String addr = await _fetchAddressString(pos);
-        if (mounted) {
-          state = state.copyWith(
-            initialPosition: CameraPosition(target: latLng, zoom: 15),
-            markers: { Marker(markerId: const MarkerId('current'), position: latLng) },
-            currentAddress: addr,
-          );
-        }
+        state = state.copyWith(
+          initialPosition: CameraPosition(target: latLng, zoom: 15),
+          markers: { Marker(markerId: const MarkerId('current'), position: latLng) },
+          currentAddress: addr,
+        );
       }
     } catch (e) {
-      if (mounted) state = state.copyWith(currentAddress: "att.location_error");
+      state = state.copyWith(currentAddress: "att.location_error");
     }
   }
 
@@ -393,7 +393,7 @@ class AttendanceController extends StateNotifier<AttendanceState> {
     } catch (e) {
       return e.toString(); // 返回错误给 UI
     } finally {
-      if (mounted) state = state.copyWith(isLoading: false);
+      state = state.copyWith(isLoading: false);
     }
   }
 
@@ -458,27 +458,23 @@ class AttendanceController extends StateNotifier<AttendanceState> {
         ref.read(trackingProvider.notifier).stopTracking();
       }
 
-      if (mounted) {
-        state = state.copyWith(
-          isProcessingAction: false, 
-          clearPhoto: true, 
-          successMessage: "att.msg_success".tr()
-        );
-      }
+      state = state.copyWith(
+        isProcessingAction: false, 
+        clearPhoto: true, 
+        successMessage: "att.msg_success".tr()
+      );
 
     } catch (e) {
       debugPrint("Upload failed: $e");
-      if (mounted) {
-        state = state.copyWith(
-          isProcessingAction: false, 
-          errorMessage: "Upload Failed. Please check your connection or try again later."
-        );
-      }
+      state = state.copyWith(
+        isProcessingAction: false, 
+        errorMessage: "Upload Failed. Please check your connection or try again later."
+      );
     }
   }
 }
 
-// 暴露 Provider
-final attendanceProvider = StateNotifierProvider<AttendanceController, AttendanceState>((ref) {
-  return AttendanceController(ref);
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final attendanceProvider = NotifierProvider<AttendanceNotifier, AttendanceState>(() {
+  return AttendanceNotifier();
 });

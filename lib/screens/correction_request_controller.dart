@@ -8,7 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class CorrectionRequestState {
   final TimeOfDay? reqIn;
@@ -57,21 +57,26 @@ class CorrectionRequestState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class CorrectionRequestController extends StateNotifier<CorrectionRequestState> {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class CorrectionRequestNotifier extends AutoDisposeNotifier<CorrectionRequestState> {
   final ImagePicker _picker = ImagePicker();
 
-  CorrectionRequestController() : super(CorrectionRequestState());
+  // 🔴 CHANGED: 使用 build 方法初始化
+  @override
+  CorrectionRequestState build() {
+    return CorrectionRequestState();
+  }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   void setReqIn(TimeOfDay time) {
-    if (mounted) state = state.copyWith(reqIn: time);
+    state = state.copyWith(reqIn: time);
   }
 
   void setReqOut(TimeOfDay time) {
-    if (mounted) state = state.copyWith(reqOut: time);
+    state = state.copyWith(reqOut: time);
   }
 
   Future<void> pickImage() async {
@@ -80,7 +85,7 @@ class CorrectionRequestController extends StateNotifier<CorrectionRequestState> 
         source: ImageSource.gallery, 
         imageQuality: 80
       );
-      if (picked != null && mounted) {
+      if (picked != null) {
         state = state.copyWith(selectedFile: picked);
       }
     } catch (e) {
@@ -89,7 +94,7 @@ class CorrectionRequestController extends StateNotifier<CorrectionRequestState> 
   }
 
   void removeImage() {
-    if (mounted) state = state.copyWith(clearImage: true);
+    state = state.copyWith(clearImage: true);
   }
 
   Future<void> submitRequest({
@@ -117,7 +122,7 @@ class CorrectionRequestController extends StateNotifier<CorrectionRequestState> 
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: "User not logged in");
+      state = state.copyWith(isLoading: false, errorMessage: "User not logged in");
       return;
     }
 
@@ -154,25 +159,21 @@ class CorrectionRequestController extends StateNotifier<CorrectionRequestState> 
         'attachmentUrl': attachmentUrl,
       });
 
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          successMessage: "Correction Request Submitted!",
-          shouldPop: true,
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        successMessage: "Correction Request Submitted!",
+        shouldPop: true,
+      );
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          errorMessage: "Error: $e",
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: "Error: $e",
+      );
     }
   }
 }
 
-// 暴露 Provider
-final correctionProvider = StateNotifierProvider.autoDispose<CorrectionRequestController, CorrectionRequestState>((ref) {
-  return CorrectionRequestController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final correctionProvider = NotifierProvider.autoDispose<CorrectionRequestNotifier, CorrectionRequestState>(() {
+  return CorrectionRequestNotifier();
 });

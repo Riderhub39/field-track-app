@@ -8,7 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:easy_localization/easy_localization.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class LeaveApplicationState {
   final bool isLoading;
@@ -73,21 +73,26 @@ class LeaveApplicationState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
-  LeaveApplicationController() : super(LeaveApplicationState()) {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState> {
+  
+  // 🔴 CHANGED: 使用 build 方法初始化
+  @override
+  LeaveApplicationState build() {
+    // 异步加载余额，不阻塞初始状态返回
     fetchBalances();
+    return LeaveApplicationState();
   }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   void setLeaveType(String typeKey) {
-    if (mounted) state = state.copyWith(leaveTypeKey: typeKey);
+    state = state.copyWith(leaveTypeKey: typeKey);
   }
 
   void setDates({DateTime? start, DateTime? end}) {
-    if (!mounted) return;
     DateTime? newStart = start ?? state.startDate;
     DateTime? newEnd = end ?? state.endDate;
 
@@ -105,7 +110,7 @@ class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
         allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'], 
       );
 
-      if (result != null && mounted) {
+      if (result != null) {
         state = state.copyWith(selectedFile: result.files.first);
       }
     } catch (e) {
@@ -114,7 +119,7 @@ class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
   }
 
   void removeAttachment() {
-    if (mounted) state = state.copyWith(clearFile: true);
+    state = state.copyWith(clearFile: true);
   }
 
   int calculateWorkingDays(DateTime? start, DateTime? end) {
@@ -148,21 +153,19 @@ class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
       }
 
       if (userData != null && userData.containsKey('leave_balance')) {
-        if (mounted) {
-          state = state.copyWith(
-            balances: {
-              ...state.balances,
-              ...userData['leave_balance']
-            },
-            balanceLoaded: true,
-          );
-        }
+        state = state.copyWith(
+          balances: {
+            ...state.balances,
+            ...userData['leave_balance']
+          },
+          balanceLoaded: true,
+        );
       } else {
-        if (mounted) state = state.copyWith(balanceLoaded: true);
+        state = state.copyWith(balanceLoaded: true);
       }
     } catch (e) {
       debugPrint("Error fetching balance: $e");
-      if (mounted) state = state.copyWith(balanceLoaded: true); // 避免卡在loading
+      state = state.copyWith(balanceLoaded: true); // 避免卡在loading
     }
   }
 
@@ -209,7 +212,7 @@ class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
     if (state.leaveTypeKey == 'leave.type_annual') {
       int annualBal = (state.balances['annual'] is int) ? state.balances['annual'] : 0;
       if (annualBal < days) {
-        state = state.copyWith(errorMessage: "leave.error_insufficient", clearMessages: true); // 会在 UI 层使用 args 翻译
+        state = state.copyWith(errorMessage: "leave.error_insufficient", clearMessages: true); 
         return;
       }
     } else if (state.leaveTypeKey == 'leave.type_medical') {
@@ -293,21 +296,20 @@ class LeaveApplicationController extends StateNotifier<LeaveApplicationState> {
 
       await FirebaseFirestore.instance.collection('leaves').add(leaveData);
 
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          successMessage: "leave.msg_submit_success",
-          clearDates: true,
-          clearFile: true,
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        successMessage: "leave.msg_submit_success",
+        clearDates: true,
+        clearFile: true,
+      );
+
     } catch (e) {
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: "Error: $e");
+      state = state.copyWith(isLoading: false, errorMessage: "Error: $e");
     }
   }
 }
 
-// 暴露 Provider
-final leaveApplicationProvider = StateNotifierProvider.autoDispose<LeaveApplicationController, LeaveApplicationState>((ref) {
-  return LeaveApplicationController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final leaveApplicationProvider = NotifierProvider.autoDispose<LeaveApplicationNotifier, LeaveApplicationState>(() {
+  return LeaveApplicationNotifier();
 });

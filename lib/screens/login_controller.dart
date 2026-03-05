@@ -7,7 +7,7 @@ import '../services/auth_service.dart';
 import '../services/biometric_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class LoginState {
   final bool isLoading;
@@ -65,23 +65,28 @@ class LoginState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class LoginController extends StateNotifier<LoginState> {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class LoginNotifier extends AutoDisposeNotifier<LoginState> {
   static const String _keyFailedAttempts = 'auth_failed_attempts';
   static const String _keyLockoutTime = 'auth_lockout_timestamp';
 
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  LoginController() : super(LoginState()) {
+  // 🔴 CHANGED: 使用 build() 初始化
+  @override
+  LoginState build() {
+    // 异步加载安全状态，不阻塞 UI 渲染初始帧
     _loadSecurityState();
+    return LoginState();
   }
 
   void toggleObscure() {
-    if (mounted) state = state.copyWith(isObscured: !state.isObscured);
+    state = state.copyWith(isObscured: !state.isObscured);
   }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   // --- 安全与锁定逻辑 ---
@@ -94,16 +99,12 @@ class LoginController extends StateNotifier<LoginState> {
     if (lockoutTimestamp != null) {
       final lockoutEnd = DateTime.fromMillisecondsSinceEpoch(lockoutTimestamp);
       if (DateTime.now().isBefore(lockoutEnd)) {
-        if (mounted) {
-          state = state.copyWith(lockoutTime: lockoutEnd, failedAttempts: savedAttempts);
-        }
+        state = state.copyWith(lockoutTime: lockoutEnd, failedAttempts: savedAttempts);
       } else {
         await resetSecurityState();
       }
     } else {
-      if (mounted) {
-        state = state.copyWith(failedAttempts: savedAttempts);
-      }
+      state = state.copyWith(failedAttempts: savedAttempts);
     }
   }
 
@@ -111,12 +112,11 @@ class LoginController extends StateNotifier<LoginState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_keyFailedAttempts);
     await prefs.remove(_keyLockoutTime);
+    
     // 为了彻底清除锁定时间，我们需要传一个新的对象，这里直接用默认值覆盖
-    if (mounted) {
-      state = LoginState(
-        isObscured: state.isObscured, // 保留当前的密码可见性状态
-      );
-    }
+    state = LoginState(
+      isObscured: state.isObscured, // 保留当前的密码可见性状态
+    );
   }
 
   Future<void> _recordLoginFailure() async {
@@ -127,14 +127,10 @@ class LoginController extends StateNotifier<LoginState> {
       final lockoutEnd = DateTime.now().add(const Duration(minutes: 5));
       await prefs.setInt(_keyLockoutTime, lockoutEnd.millisecondsSinceEpoch);
       await prefs.setInt(_keyFailedAttempts, newAttempts);
-      if (mounted) {
-        state = state.copyWith(failedAttempts: newAttempts, lockoutTime: lockoutEnd);
-      }
+      state = state.copyWith(failedAttempts: newAttempts, lockoutTime: lockoutEnd);
     } else {
       await prefs.setInt(_keyFailedAttempts, newAttempts);
-      if (mounted) {
-        state = state.copyWith(failedAttempts: newAttempts);
-      }
+      state = state.copyWith(failedAttempts: newAttempts);
     }
   }
 
@@ -232,10 +228,10 @@ class LoginController extends StateNotifier<LoginState> {
       } else if (['user-not-found', 'wrong-password', 'invalid-email', 'invalid-credential'].contains(e.code)) {
         message = "register.account_not_found"; // locale key
       }
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: message);
+      state = state.copyWith(isLoading: false, errorMessage: message);
 
     } catch (e) {
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: "Connection Error.");
+      state = state.copyWith(isLoading: false, errorMessage: "Connection Error.");
     }
   }
 
@@ -249,50 +245,42 @@ class LoginController extends StateNotifier<LoginState> {
     bool isHardwareSupported = await BiometricService().isDeviceSupported();
 
     if (!isHardwareSupported || isEnabled || hasAsked) {
-      if (mounted) {
-        state = state.copyWith(isLoading: false, shouldNavigateToHome: true);
-      }
+      state = state.copyWith(isLoading: false, shouldNavigateToHome: true);
     } else {
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false, 
-          shouldShowBiometricPrompt: true, 
-          authenticatedUser: user
-        );
-      }
+      state = state.copyWith(
+        isLoading: false, 
+        shouldShowBiometricPrompt: true, 
+        authenticatedUser: user
+      );
     }
   }
 
   Future<void> declineBiometrics() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('has_asked_biometrics', true);
-    if (mounted) {
-      state = state.copyWith(shouldShowBiometricPrompt: false, shouldNavigateToHome: true);
-    }
+    state = state.copyWith(shouldShowBiometricPrompt: false, shouldNavigateToHome: true);
   }
 
   Future<void> enableBiometrics() async {
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) state = state.copyWith(shouldShowBiometricPrompt: false);
+    state = state.copyWith(shouldShowBiometricPrompt: false);
 
     bool success = await BiometricService().authenticateStaff();
     
     if (success) {
       await prefs.setBool('biometric_enabled', true);
       await prefs.setBool('has_asked_biometrics', true);
-      if (mounted) {
-        state = state.copyWith(
-          successMessage: 'settings.biometric_on_msg', // locale key
-          shouldNavigateToHome: true
-        );
-      }
+      state = state.copyWith(
+        successMessage: 'settings.biometric_on_msg', // locale key
+        shouldNavigateToHome: true
+      );
     } else {
-      if (mounted) state = state.copyWith(shouldNavigateToHome: true);
+      state = state.copyWith(shouldNavigateToHome: true);
     }
   }
 }
 
-// 暴露 Provider
-final loginProvider = StateNotifierProvider.autoDispose<LoginController, LoginState>((ref) {
-  return LoginController();
+// 🔴 CHANGED: 使用 NotifierProvider.autoDispose 暴露 Provider
+final loginProvider = NotifierProvider.autoDispose<LoginNotifier, LoginState>(() {
+  return LoginNotifier();
 });

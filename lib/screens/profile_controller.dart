@@ -5,7 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class ProfileState {
   final bool isLoading;
@@ -55,7 +55,8 @@ class ProfileState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class ProfileController extends StateNotifier<ProfileState> {
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class ProfileNotifier extends AutoDisposeNotifier<ProfileState> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
@@ -65,28 +66,32 @@ class ProfileController extends StateNotifier<ProfileState> {
   // 全局的输入框控制器池，避免内存泄漏，并且在编辑时保持状态
   final Map<String, TextEditingController> _controllers = {};
 
-  ProfileController() : super(ProfileState()) {
-    _initRealtimeListeners();
-  }
-
+  // 🔴 CHANGED: 使用 build 方法初始化和注册清理函数
   @override
-  void dispose() {
-    _userSubscription?.cancel();
-    _requestSubscription?.cancel();
-    for (var controller in _controllers.values) {
-      controller.dispose();
-    }
-    super.dispose();
+  ProfileState build() {
+    _initRealtimeListeners();
+
+    // 注册资源释放逻辑
+    ref.onDispose(() {
+      _userSubscription?.cancel();
+      _requestSubscription?.cancel();
+      for (var controller in _controllers.values) {
+        controller.dispose();
+      }
+      _controllers.clear();
+    });
+
+    return ProfileState();
   }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   void _initRealtimeListeners() async {
     final user = _auth.currentUser;
     if (user == null) {
-      if (mounted) state = state.copyWith(isLoading: false, errorMessage: "Not logged in");
+      state = state.copyWith(isLoading: false, errorMessage: "Not logged in");
       return;
     }
 
@@ -98,7 +103,7 @@ class ProfileController extends StateNotifier<ProfileState> {
           .get();
 
       if (querySnapshot.docs.isEmpty) {
-        if (mounted) state = state.copyWith(isLoading: false);
+        state = state.copyWith(isLoading: false);
         return;
       }
 
@@ -110,7 +115,7 @@ class ProfileController extends StateNotifier<ProfileState> {
           .doc(docId)
           .snapshots()
           .listen((snapshot) {
-        if (snapshot.exists && mounted) {
+        if (snapshot.exists) {
           final data = snapshot.data() as Map<String, dynamic>;
           state = state.copyWith(
             docId: docId,
@@ -128,17 +133,14 @@ class ProfileController extends StateNotifier<ProfileState> {
           .where('status', isEqualTo: 'pending')
           .snapshots()
           .listen((snapshot) {
-        if (mounted) {
-          state = state.copyWith(hasPendingRequest: snapshot.docs.isNotEmpty);
-        }
+        state = state.copyWith(hasPendingRequest: snapshot.docs.isNotEmpty);
       });
+      
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isLoading: false,
-          errorMessage: "Failed to load profile: $e"
-        );
-      }
+      state = state.copyWith(
+        isLoading: false,
+        errorMessage: "Failed to load profile: $e"
+      );
     }
   }
 
@@ -180,19 +182,15 @@ class ProfileController extends StateNotifier<ProfileState> {
 
       await _db.collection('users').doc(state.docId).update(updates);
 
-      if (mounted) {
-        state = state.copyWith(
-          successMessage: "profile.save_success", // locale key
-          isLoading: false
-        );
-      }
+      state = state.copyWith(
+        successMessage: "profile.save_success", // locale key
+        isLoading: false
+      );
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          errorMessage: "profile.save_failed", // 可以考虑合并 $e，但在 UI 层做更稳
-          isLoading: false
-        );
-      }
+      state = state.copyWith(
+        errorMessage: "profile.save_failed", 
+        isLoading: false
+      );
     }
   }
 
@@ -209,18 +207,14 @@ class ProfileController extends StateNotifier<ProfileState> {
         'date': FieldValue.serverTimestamp(),
       });
       
-      if (mounted) {
-        state = state.copyWith(successMessage: "profile.request_sent");
-      }
+      state = state.copyWith(successMessage: "profile.request_sent");
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(errorMessage: "profile.request_failed");
-      }
+      state = state.copyWith(errorMessage: "profile.request_failed");
     }
   }
 }
 
-// 暴露 Provider
-final profileProvider = StateNotifierProvider.autoDispose<ProfileController, ProfileState>((ref) {
-  return ProfileController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final profileProvider = NotifierProvider.autoDispose<ProfileNotifier, ProfileState>(() {
+  return ProfileNotifier();
 });

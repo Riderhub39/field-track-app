@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 import '../services/biometric_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State)
+// 1. 状态定义 (State) - 保持不变
 // ==========================================
 class PayslipState {
   final bool isGenerating;
@@ -53,15 +53,21 @@ class PayslipState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class PayslipController extends StateNotifier<PayslipState> {
-  PayslipController() : super(PayslipState());
+// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
+class PayslipNotifier extends AutoDisposeNotifier<PayslipState> {
+  
+  // 🔴 CHANGED: 使用 build 方法初始化
+  @override
+  PayslipState build() {
+    return PayslipState();
+  }
 
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    state = state.copyWith(clearMessages: true);
   }
 
   void clearTabSwitch() {
-    if (mounted) state = state.copyWith(clearTabSwitch: true);
+    state = state.copyWith(clearTabSwitch: true);
   }
 
   // 🟢 核心功能：打开敏感文档前的生物识别验证
@@ -71,12 +77,10 @@ class PayslipController extends StateNotifier<PayslipState> {
     if (success) {
       await onAuthenticated();
     } else {
-      if (mounted) {
-        state = state.copyWith(
-          errorMessage: "Authentication required to view sensitive documents.",
-          clearMessages: true
-        );
-      }
+      state = state.copyWith(
+        errorMessage: "Authentication required to view sensitive documents.",
+        clearMessages: true
+      );
     }
   }
 
@@ -197,22 +201,18 @@ class PayslipController extends StateNotifier<PayslipState> {
         'appliedAt': FieldValue.serverTimestamp(),
       });
 
-      if (mounted) {
-        state = state.copyWith(
-          isGenerating: false,
-          successMessage: "Advance request submitted successfully!",
-          shouldSwitchToDocumentsTab: true,
-          clearMessages: true,
-        );
-      }
+      state = state.copyWith(
+        isGenerating: false,
+        successMessage: "Advance request submitted successfully!",
+        shouldSwitchToDocumentsTab: true,
+        clearMessages: true,
+      );
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isGenerating: false,
-          errorMessage: "Failed to submit: $e",
-          clearMessages: true,
-        );
-      }
+      state = state.copyWith(
+        isGenerating: false,
+        errorMessage: "Failed to submit: $e",
+        clearMessages: true,
+      );
     }
   }
 
@@ -230,18 +230,14 @@ class PayslipController extends StateNotifier<PayslipState> {
       final file = File("${output.path}/IOU_$timeSuffix.pdf");
       
       await file.writeAsBytes(response.bodyBytes);
-      if (mounted) {
-        state = state.copyWith(isGenerating: false);
-        await OpenFilex.open(file.path);
-      }
+      state = state.copyWith(isGenerating: false);
+      await OpenFilex.open(file.path);
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isGenerating: false,
-          errorMessage: "Failed to open document: $e",
-          clearMessages: true,
-        );
-      }
+      state = state.copyWith(
+        isGenerating: false,
+        errorMessage: "Failed to open document: $e",
+        clearMessages: true,
+      );
     }
   }
 
@@ -409,18 +405,14 @@ class PayslipController extends StateNotifier<PayslipState> {
       final file = File("${output.path}/Payslip_${data['month']}.pdf");
       await file.writeAsBytes(await pdf.save());
 
-      if (mounted) {
-        state = state.copyWith(isGenerating: false);
-        await OpenFilex.open(file.path);
-      }
+      state = state.copyWith(isGenerating: false);
+      await OpenFilex.open(file.path);
     } catch (e) {
-      if (mounted) {
-        state = state.copyWith(
-          isGenerating: false,
-          errorMessage: "Failed to generate PDF: $e",
-          clearMessages: true,
-        );
-      }
+      state = state.copyWith(
+        isGenerating: false,
+        errorMessage: "Failed to generate PDF: $e",
+        clearMessages: true,
+      );
     }
   }
 
@@ -460,7 +452,7 @@ class PayslipController extends StateNotifier<PayslipState> {
   }
 }
 
-// 暴露 Provider
-final payslipProvider = StateNotifierProvider.autoDispose<PayslipController, PayslipState>((ref) {
-  return PayslipController();
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final payslipProvider = NotifierProvider.autoDispose<PayslipNotifier, PayslipState>(() {
+  return PayslipNotifier();
 });

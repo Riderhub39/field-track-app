@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -73,15 +72,25 @@ class HomeState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class HomeController extends StateNotifier<HomeState> {
-  final Ref ref;
-
+// 🔴 CHANGED: 从 StateNotifier 迁移至 Notifier
+class HomeNotifier extends Notifier<HomeState> {
   StreamSubscription? _announcementSubscription;
   StreamSubscription? _userStatusSubscription;
   StreamSubscription<bool>? _kickOutSubscription;
 
-  HomeController(this.ref) : super(HomeState()) {
+  // 🔴 CHANGED: 使用 build 方法初始化状态和逻辑
+  @override
+  HomeState build() {
     _initAll();
+    
+    // 🔴 CHANGED: 使用 ref.onDispose 处理流的取消，代替 override dispose()
+    ref.onDispose(() {
+      _announcementSubscription?.cancel();
+      _userStatusSubscription?.cancel();
+      _kickOutSubscription?.cancel();
+    });
+
+    return HomeState();
   }
 
   void _initAll() {
@@ -98,16 +107,9 @@ class HomeController extends StateNotifier<HomeState> {
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
 
-  @override
-  void dispose() {
-    _announcementSubscription?.cancel();
-    _userStatusSubscription?.cancel();
-    _kickOutSubscription?.cancel();
-    super.dispose();
-  }
-
   void clearMessages() {
-    if (mounted) state = state.copyWith(clearMessages: true);
+    // 🔴 CHANGED: Notifier 中直接赋值 state 即可，去掉了 if(mounted)
+    state = state.copyWith(clearMessages: true);
   }
 
   // --- 后台监听服务 ---
@@ -142,23 +144,22 @@ class HomeController extends StateNotifier<HomeState> {
           return;
         }
 
-        if (mounted) {
-          String sName = "Staff";
-          final personal = data['personal'] as Map<String, dynamic>?;
-          if (personal != null) {
-            if (personal['shortName'] != null && personal['shortName'].toString().isNotEmpty) {
-              sName = personal['shortName'];
-            } else if (personal['name'] != null) {
-              sName = personal['name'];
-            }
-            _cacheUserName(sName);
+        String sName = "Staff";
+        final personal = data['personal'] as Map<String, dynamic>?;
+        if (personal != null) {
+          if (personal['shortName'] != null && personal['shortName'].toString().isNotEmpty) {
+            sName = personal['shortName'];
+          } else if (personal['name'] != null) {
+            sName = personal['name'];
           }
-
-          state = state.copyWith(
-            staffName: sName,
-            faceIdPhotoPath: data['faceIdPhoto'],
-          );
+          _cacheUserName(sName);
         }
+
+        // 🔴 CHANGED: 直接更新 state
+        state = state.copyWith(
+          staffName: sName,
+          faceIdPhotoPath: data['faceIdPhoto'],
+        );
       } else {
         _triggerForceLogout('not_found');
       }
@@ -180,19 +181,17 @@ class HomeController extends StateNotifier<HomeState> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
 
-    // 只执行 signOut，真正的页面跳转交给 UI 层的 Provider 监听去执行
     await FirebaseAuth.instance.signOut();
 
-    if (mounted) {
-      state = state.copyWith(
-        shouldShowLogoutDialog: true,
-        logoutReason: reason,
-      );
-    }
+    // 🔴 CHANGED: 直接更新 state
+    state = state.copyWith(
+      shouldShowLogoutDialog: true,
+      logoutReason: reason,
+    );
   }
 
   void resetLogoutDialog() {
-    if (mounted) state = state.copyWith(shouldShowLogoutDialog: false);
+    state = state.copyWith(shouldShowLogoutDialog: false);
   }
 
   void _listenForAnnouncements() {
@@ -221,18 +220,17 @@ class HomeController extends StateNotifier<HomeState> {
 
       if (createdAt.millisecondsSinceEpoch > lastShownTime) {
         await prefs.setInt('last_announcement_time', createdAt.millisecondsSinceEpoch);
-        if (mounted) {
-          state = state.copyWith(
-            shouldShowAnnouncement: true,
-            announcementData: data,
-          );
-        }
+        // 🔴 CHANGED: 直接更新 state
+        state = state.copyWith(
+          shouldShowAnnouncement: true,
+          announcementData: data,
+        );
       }
     });
   }
 
   void resetAnnouncementDialog() {
-    if (mounted) state = state.copyWith(shouldShowAnnouncement: false);
+    state = state.copyWith(shouldShowAnnouncement: false);
   }
 
   Future<void> _checkBiometricSetup() async {
@@ -245,28 +243,24 @@ class HomeController extends StateNotifier<HomeState> {
     bool isHardwareSupported = await BiometricService().isDeviceSupported();
     if (!isHardwareSupported) return;
 
-    if (mounted) {
-      state = state.copyWith(shouldShowBiometricPrompt: true);
-    }
+    state = state.copyWith(shouldShowBiometricPrompt: true);
   }
 
   void setBiometricLater() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('has_asked_biometrics', true);
-    if (mounted) state = state.copyWith(shouldShowBiometricPrompt: false);
+    state = state.copyWith(shouldShowBiometricPrompt: false);
   }
 
   Future<void> enableBiometric() async {
     final prefs = await SharedPreferences.getInstance();
-    if (mounted) state = state.copyWith(shouldShowBiometricPrompt: false);
+    state = state.copyWith(shouldShowBiometricPrompt: false);
 
     bool success = await BiometricService().authenticateStaff();
     if (success) {
       await prefs.setBool('biometric_enabled', true);
       await prefs.setBool('has_asked_biometrics', true);
-      if (mounted) {
-        state = state.copyWith(successMessage: 'settings.biometric_on_msg'); // locale key
-      }
+      state = state.copyWith(successMessage: 'settings.biometric_on_msg');
     }
   }
 
@@ -307,23 +301,19 @@ class HomeController extends StateNotifier<HomeState> {
           'lastFaceUpdate': FieldValue.serverTimestamp(),
         });
 
-        if (mounted) {
-          state = state.copyWith(
-            faceIdPhotoPath: downloadUrl,
-            successMessage: 'profile.save_success',
-          );
-        }
+        state = state.copyWith(
+          faceIdPhotoPath: downloadUrl,
+          successMessage: 'profile.save_success',
+        );
       }
     } catch (e) {
       debugPrint("Error updating photo: $e");
-      if (mounted) {
-        state = state.copyWith(errorMessage: 'home.msg_upload_fail');
-      }
+      state = state.copyWith(errorMessage: 'home.msg_upload_fail');
     }
   }
 }
 
-// 暴露 Provider
-final homeProvider = StateNotifierProvider<HomeController, HomeState>((ref) {
-  return HomeController(ref);
+// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
+final homeProvider = NotifierProvider<HomeNotifier, HomeState>(() {
+  return HomeNotifier();
 });
