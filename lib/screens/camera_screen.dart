@@ -1,6 +1,7 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart'; // 🟢 新增引入
 import 'camera_controller.dart'; 
 
 class CameraScreen extends ConsumerStatefulWidget {
@@ -10,31 +11,76 @@ class CameraScreen extends ConsumerStatefulWidget {
   ConsumerState<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends ConsumerState<CameraScreen> {
+// 🟢 新增 with WidgetsBindingObserver 用于监听 App 切后台和恢复
+class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBindingObserver {
   CameraController? _cameraController;
-  Future<void>? _initializeControllerFuture;
+  late Future<void> _initializeControllerFuture;
 
   @override
   void initState() {
     super.initState();
-    _initHardwareCamera();
+    WidgetsBinding.instance.addObserver(this); // 🟢 注册生命周期监听
+    _initializeControllerFuture = _initHardwareCamera();
   }
 
-  Future<void> _initHardwareCamera() async {
-    final cameras = await availableCameras();
-    final backCamera = cameras.firstWhere(
-      (c) => c.lensDirection == CameraLensDirection.back, 
-      orElse: () => cameras.first
-    );
-    _cameraController = CameraController(backCamera, ResolutionPreset.high, enableAudio: false);
-    _initializeControllerFuture = _cameraController!.initialize();
-    if (mounted) setState(() {});
+  // 🟢 监听 App 生命周期，防止切后台回来后相机卡死
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final CameraController? cameraController = _cameraController;
+
+    // 如果相机还没初始化好，直接忽略
+    if (cameraController == null || !cameraController.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      // App 失去焦点（如切后台、弹系统权限窗）时，释放相机
+      cameraController.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      // App 恢复焦点时，重新初始化相机
+      _initializeControllerFuture = _initHardwareCamera();
+      if (mounted) setState(() {});
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this); // 🟢 移除监听
     _cameraController?.dispose();
     super.dispose();
+  }
+
+  Future<void> _initHardwareCamera() async {
+    try {
+      // 💡 核心修复1：在触碰相机硬件前，先手动要求权限并等待结果
+      var status = await Permission.camera.request();
+      if (!status.isGranted) {
+        throw Exception("Camera permission is denied. Please enable it in settings.");
+      }
+
+      final cameras = await availableCameras();
+      
+      if (cameras.isEmpty) {
+        throw Exception("No cameras found on this device.");
+      }
+
+      final backCamera = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back, 
+        orElse: () => cameras.first
+      );
+      
+      _cameraController = CameraController(
+        backCamera, 
+        ResolutionPreset.high, 
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg, 
+      );
+      
+      await _cameraController!.initialize();
+    } catch (e) {
+      debugPrint("Camera Init Error: $e");
+      rethrow; 
+    }
   }
 
   TextStyle _getOutlinedTextStyle({required double fontSize, FontWeight fontWeight = FontWeight.bold, Color color = Colors.white}) {
@@ -56,24 +102,21 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(cameraScreenProvider);
 
-    // 🟢 监听连续拍照成功的事件
     ref.listen<CameraScreenState>(cameraScreenProvider, (previous, next) {
-      // 错误拦截
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Error: ${next.errorMessage}"), backgroundColor: Colors.red)
         );
       }
       
-      // 🚀 当连拍计数器增加时，提示用户且不再执行 pop，允许继续点击
       if (next.captureCount > (previous?.captureCount ?? 0)) {
-        ScaffoldMessenger.of(context).clearSnackBars(); // 清除旧提示，避免堆积
+        ScaffoldMessenger.of(context).clearSnackBars(); 
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("📸 Captured! Uploading in background..."), 
             backgroundColor: Colors.green,
-            duration: Duration(milliseconds: 1500), // 改短显示时间，避免阻挡屏幕
-            behavior: SnackBarBehavior.floating, // 悬浮样式
+            duration: Duration(milliseconds: 1500), 
+            behavior: SnackBarBehavior.floating, 
           )
         );
       }
@@ -87,14 +130,39 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
       body: FutureBuilder<void>(
         future: _initializeControllerFuture,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.done && _cameraController != null) {
+          
+          if (snapshot.hasError) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red, size: 60),
+                  const SizedBox(height: 16),
+                  Text("Camera Error:\n${snapshot.error}", 
+                    style: const TextStyle(color: Colors.white), 
+                    textAlign: TextAlign.center
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text("Go Back"),
+                  )
+                ],
+              ),
+            );
+          }
+
+          if (snapshot.connectionState == ConnectionState.done && 
+              _cameraController != null && 
+              _cameraController!.value.isInitialized) {
+                
             return Stack(
               children: [
-                SizedBox.expand(child: CameraPreview(_cameraController!)),
+                // 💡 核心修复2：加一层 Center 防止极端情况下的布局尺寸约束奔溃导致灰屏
+                Center(child: CameraPreview(_cameraController!)),
                 
-                // 🟢 UI 预览水印上移
                 Positioned(
-                  bottom: 160, right: 15, left: 15, 
+                  bottom: 240, right: 15, left: 15, 
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.end, 
                     mainAxisSize: MainAxisSize.min,
@@ -108,13 +176,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                   ),
                 ),
                 
-                // 🟢 拍照按钮整体上移
                 Positioned(
                   bottom: 60, left: 0, right: 0,
                   child: Center(
                     child: GestureDetector(
                       onTap: () {
-                        // 防暴击：只有处于 Ready 状态时才能点
                         if (state.isReady) {
                           ref.read(cameraScreenProvider.notifier).captureAndUpload(_cameraController!);
                         }
@@ -130,7 +196,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                           child: Container(
                             height: 64, width: 64,
                             decoration: BoxDecoration(color: state.isReady ? Colors.white : Colors.transparent, shape: BoxShape.circle),
-                            // 即使在处理中也只阻挡零点几秒，几乎感觉不到
                             child: state.isProcessing 
                               ? const CircularProgressIndicator(color: Colors.black)
                               : Center(child: state.isReady ? null : const Icon(Icons.hourglass_empty, color: Colors.grey, size: 30)), 
@@ -141,7 +206,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
                   ),
                 ),
 
-                // 由于不自动退出了，给用户一个明确的返回按钮
                 Positioned(
                   top: 50, right: 20, 
                   child: GestureDetector(
@@ -156,6 +220,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> {
               ],
             );
           }
+          
           return const Center(child: CircularProgressIndicator(color: Colors.white));
         },
       ),

@@ -61,25 +61,30 @@ class CameraScreenState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🔴 CHANGED: 迁移至 AutoDisposeNotifier
 class CameraScreenNotifier extends AutoDisposeNotifier<CameraScreenState> {
   Timer? _timer;
 
-  // 🔴 CHANGED: 使用 build 方法初始化和清理
   @override
   CameraScreenState build() {
-    _initData();
-    _startClock();
-
+    // 1. 注册清理逻辑
     ref.onDispose(() {
       _timer?.cancel();
     });
 
-    return CameraScreenState();
+    // 2. 异步获取网络和定位数据
+    _initData();
+
+    // 3. 启动定时器
+    _startClock();
+
+    // 🚀 核心修复：直接将当前时间赋予初始状态，而不是在 build 期间修改 state
+    return CameraScreenState(
+      dateTimeStr: DateFormat('yyyy-MM-dd HH:mm:ss').format(DateTime.now()),
+    );
   }
 
   void _startClock() {
-    _updateTime();
+    // 🚀 核心修复：删除了容易导致奔溃的 _updateTime() 同步调用
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _updateTime());
   }
 
@@ -111,9 +116,34 @@ class CameraScreenNotifier extends AutoDisposeNotifier<CameraScreenState> {
     state = state.copyWith(staffName: "Unknown Staff");
   }
 
-  Future<void> _initLocationAndAddress() async {
+ Future<void> _initLocationAndAddress() async {
     try {
-      Position pos = await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+      // 1. 检查定位服务是否开启
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        state = state.copyWith(address: "Location disabled");
+        return;
+      }
+
+      // 2. 检查并请求定位权限
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          state = state.copyWith(address: "Permission denied");
+          return;
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        state = state.copyWith(address: "Permission denied forever");
+        return;
+      }
+
+      // 3. 获取定位，增加 10 秒超时防止卡死
+      Position pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(accuracy: LocationAccuracy.high)
+      ).timeout(const Duration(seconds: 10));
+
       List<Placemark> placemarks = await placemarkFromCoordinates(pos.latitude, pos.longitude);
       if (placemarks.isNotEmpty) {
         final p = placemarks.first;
@@ -124,7 +154,9 @@ class CameraScreenNotifier extends AutoDisposeNotifier<CameraScreenState> {
         state = state.copyWith(address: fullAddress.isEmpty ? "Unknown Address" : fullAddress);
       }
     } catch (e) {
-      state = state.copyWith(address: "Location Error");
+      debugPrint("Location error: $e");
+      // 如果超时或其他错误，降级提示
+      state = state.copyWith(address: "Location Error (Try outside/Enable GPS)");
     }
   }
 
@@ -235,7 +267,7 @@ File _watermarkInIsolate(_WatermarkArgs args) {
 
   img.BitmapFont font = img.arial24; // 字体缩小配合 720p
   const int marginRight = 20;
-  const int marginBottom = 180; // 匹配上移后的 UI
+  const int marginBottom = 240; // 匹配上移后的 UI
 
   List<String> wrapText(String text, int maxChars) {
     List<String> lines = [];

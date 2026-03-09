@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/material.dart'; // 🟢 添加了 material.dart 用于 debugPrint
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -72,18 +73,16 @@ class HomeState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🔴 CHANGED: 从 StateNotifier 迁移至 Notifier
 class HomeNotifier extends Notifier<HomeState> {
   StreamSubscription? _announcementSubscription;
   StreamSubscription? _userStatusSubscription;
   StreamSubscription<bool>? _kickOutSubscription;
 
-  // 🔴 CHANGED: 使用 build 方法初始化状态和逻辑
   @override
   HomeState build() {
+    debugPrint("🚀 [HomeNotifier] build() triggered");
     _initAll();
     
-    // 🔴 CHANGED: 使用 ref.onDispose 处理流的取消，代替 override dispose()
     ref.onDispose(() {
       _announcementSubscription?.cancel();
       _userStatusSubscription?.cancel();
@@ -104,11 +103,12 @@ class HomeNotifier extends Notifier<HomeState> {
       _checkAndResumeTracking(user.uid);
     }
 
+    // 这里原先设定了 1 秒延迟
+    debugPrint("⏳ [HomeNotifier] Queuing Biometric Check in 1 second...");
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
 
   void clearMessages() {
-    // 🔴 CHANGED: Notifier 中直接赋值 state 即可，去掉了 if(mounted)
     state = state.copyWith(clearMessages: true);
   }
 
@@ -155,7 +155,6 @@ class HomeNotifier extends Notifier<HomeState> {
           _cacheUserName(sName);
         }
 
-        // 🔴 CHANGED: 直接更新 state
         state = state.copyWith(
           staffName: sName,
           faceIdPhotoPath: data['faceIdPhoto'],
@@ -183,7 +182,6 @@ class HomeNotifier extends Notifier<HomeState> {
 
     await FirebaseAuth.instance.signOut();
 
-    // 🔴 CHANGED: 直接更新 state
     state = state.copyWith(
       shouldShowLogoutDialog: true,
       logoutReason: reason,
@@ -220,7 +218,6 @@ class HomeNotifier extends Notifier<HomeState> {
 
       if (createdAt.millisecondsSinceEpoch > lastShownTime) {
         await prefs.setInt('last_announcement_time', createdAt.millisecondsSinceEpoch);
-        // 🔴 CHANGED: 直接更新 state
         state = state.copyWith(
           shouldShowAnnouncement: true,
           announcementData: data,
@@ -233,17 +230,37 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowAnnouncement: false);
   }
 
+  // 🔴 重点调试区域
   Future<void> _checkBiometricSetup() async {
+    debugPrint("🔍 [Biometric Debug] _checkBiometricSetup started. Waiting 800ms...");
+    await Future.delayed(const Duration(milliseconds: 800));
+
     final prefs = await SharedPreferences.getInstance();
     bool hasAsked = prefs.getBool('has_asked_biometrics') ?? false;
     bool isEnabled = prefs.getBool('biometric_enabled') ?? false;
 
-    if (hasAsked || isEnabled) return;
+    debugPrint("🔍 [Biometric Debug] Cache values -> hasAsked: $hasAsked | isEnabled: $isEnabled");
 
-    bool isHardwareSupported = await BiometricService().isDeviceSupported();
-    if (!isHardwareSupported) return;
+    if (hasAsked || isEnabled) {
+      debugPrint("🛑 [Biometric Debug] Exiting: Already asked or enabled.");
+      return;
+    }
 
-    state = state.copyWith(shouldShowBiometricPrompt: true);
+    debugPrint("🔍 [Biometric Debug] Checking hardware support...");
+    try {
+      bool isHardwareSupported = await BiometricService().isDeviceSupported();
+      debugPrint("🔍 [Biometric Debug] isDeviceSupported returned: $isHardwareSupported");
+
+      if (!isHardwareSupported) {
+        debugPrint("🛑 [Biometric Debug] Exiting: Hardware not supported OR no fingerprint enrolled on Emulator.");
+        return;
+      }
+
+      debugPrint("✅ [Biometric Debug] Conditions met. Updating state to show prompt!");
+      state = state.copyWith(shouldShowBiometricPrompt: true);
+    } catch (e) {
+      debugPrint("❌ [Biometric Debug] Exception caught during biometric check: $e");
+    }
   }
 
   void setBiometricLater() async {
@@ -313,7 +330,6 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 }
 
-// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
 final homeProvider = NotifierProvider<HomeNotifier, HomeState>(() {
   return HomeNotifier();
 });
