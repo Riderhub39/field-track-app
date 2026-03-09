@@ -459,10 +459,16 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         ref.read(trackingProvider.notifier).stopTracking();
       }
 
+      // 🟢 格式化时间为 12小时制带 am/pm (例如: 9:30 AM)
+      final actionTimeStr = DateFormat('h:mm a').format(actionTime);
+      // 🟢 将 action (Clock In/Out) 转为小写以适应句子
+      final formattedAction = action.toLowerCase(); 
+
       state = state.copyWith(
         isProcessingAction: false, 
         clearPhoto: true, 
-        successMessage: "att.msg_success".tr()
+        // 🟢 注入带时间和动作的精准提示
+        successMessage: "You have successfully $formattedAction at $actionTimeStr" 
       );
 
     } catch (e) {

@@ -18,9 +18,56 @@ import 'attendance_controller.dart';
 class AttendanceScreen extends ConsumerWidget {
   const AttendanceScreen({super.key});
 
-  @override
+@override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(attendanceProvider);
+
+    // 🟢 新增：监听状态变化并弹出提示框
+    ref.listen(attendanceProvider, (previous, next) {
+      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
+        showDialog(
+          context: context,
+          barrierDismissible: false, // 强制用户点击按钮关闭
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row( 
+              children: [
+                Icon(Icons.check_circle, color: Colors.green, size: 28),
+                SizedBox(width: 10),
+                Text("Success!", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+              ],
+            ),
+            content: Text(
+              next.successMessage!,
+              style: const TextStyle(fontSize: 15, height: 1.4),
+            ),
+            actions: [
+              TextButton(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: const Color(0xFF15438c), // 你的主题蓝
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                },
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12.0),
+                  child: Text("OK", style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      
+      // 如果你之前有错误信息的监听，可以保留在这里
+      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red),
+        );
+      }
+    });
 
     return DefaultTabController(
       length: 4,
