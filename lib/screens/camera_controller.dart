@@ -265,9 +265,9 @@ File _watermarkInIsolate(_WatermarkArgs args) {
     baseImage = img.copyResize(baseImage, width: targetWidth, interpolation: img.Interpolation.linear);
   }
 
-  img.BitmapFont font = img.arial24; // 字体缩小配合 720p
+  img.BitmapFont font = img.arial24; // 字体缩小配合 720 p
   const int marginRight = 20;
-  const int marginBottom = 240; // 匹配上移后的 UI
+  const int marginBottom = 20; // 匹配上移后的 UI
 
   List<String> wrapText(String text, int maxChars) {
     List<String> lines = [];

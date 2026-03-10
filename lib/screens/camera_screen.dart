@@ -126,7 +126,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
     const FontWeight uniformFontWeight = FontWeight.bold;
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: Colors.black, // 确保整体背景为黑色
       body: FutureBuilder<void>(
         future: _initializeControllerFuture,
         builder: (context, snapshot) {
@@ -156,28 +156,62 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
               _cameraController != null && 
               _cameraController!.value.isInitialized) {
                 
-            return Stack(
+            return Column(
               children: [
-                // 💡 核心修复2：加一层 Center 防止极端情况下的布局尺寸约束奔溃导致灰屏
-                Center(child: CameraPreview(_cameraController!)),
-                
-                Positioned(
-                  bottom: 240, right: 15, left: 15, 
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.end, 
-                    mainAxisSize: MainAxisSize.min,
+                // 🟢 上半部分：相机预览区与水印
+                Expanded(
+                  child: Stack(
+                    fit: StackFit.expand,
                     children: [
-                      Text(state.dateTimeStr, style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight), textAlign: TextAlign.right),
-                      const SizedBox(height: 4),
-                      Text(state.address, style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight), textAlign: TextAlign.right, maxLines: 4),
-                      const SizedBox(height: 4),
-                      Text("Staff: ${state.staffName}", style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight, color: Colors.white), textAlign: TextAlign.right),
+                      // 1. 相机画面
+                      ClipRect(
+                        child: Container(
+                          color: Colors.black,
+                          child: Center(
+                            child: CameraPreview(_cameraController!),
+                          ),
+                        ),
+                      ),
+                      
+                      // 2. 右上角关闭按钮
+                      Positioned(
+                        top: 50, right: 20, 
+                        child: GestureDetector(
+                          onTap: () => Navigator.pop(context), 
+                          child: Container(
+                            padding: const EdgeInsets.all(8), 
+                            decoration: BoxDecoration(color: Colors.black.withValues(alpha:0.4), shape: BoxShape.circle), 
+                            child: const Icon(Icons.close, color: Colors.white, size: 24)
+                          )
+                        )
+                      ),
+
+                      // 3. 水印文字（紧贴底部边界，即紧贴下方的黑色控制区）
+                      Positioned(
+                        bottom: 12, // 距离相机预览区底部的间距
+                        right: 15, 
+                        left: 15, 
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end, 
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(state.dateTimeStr, style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight), textAlign: TextAlign.right),
+                            const SizedBox(height: 4),
+                            Text(state.address, style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight), textAlign: TextAlign.right, maxLines: 4),
+                            const SizedBox(height: 4),
+                            Text("Staff: ${state.staffName}", style: _getOutlinedTextStyle(fontSize: uniformFontSize, fontWeight: uniformFontWeight, color: Colors.white), textAlign: TextAlign.right),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ),
                 
-                Positioned(
-                  bottom: 60, left: 0, right: 0,
+                // 🟢 下半部分：黑色控制区域（快门按钮）
+                Container(
+                  width: double.infinity,
+                  height: 140, // 黑色区域的固定高度
+                  color: Colors.black,
                   child: Center(
                     child: GestureDetector(
                       onTap: () {
@@ -190,7 +224,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
                         decoration: BoxDecoration(
                           shape: BoxShape.circle, 
                           border: Border.all(color: state.isReady ? Colors.white : Colors.grey.withValues(alpha:0.5), width: 5),
-                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha:0.3), blurRadius: 10)]
+                          boxShadow: [BoxShadow(color: Colors.white.withValues(alpha:0.1), blurRadius: 10)]
                         ),
                         child: Center(
                           child: Container(
@@ -205,18 +239,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
                     ),
                   ),
                 ),
-
-                Positioned(
-                  top: 50, right: 20, 
-                  child: GestureDetector(
-                    onTap: () => Navigator.pop(context), 
-                    child: Container(
-                      padding: const EdgeInsets.all(8), 
-                      decoration: BoxDecoration(color: Colors.black.withValues(alpha:0.4), shape: BoxShape.circle), 
-                      child: const Icon(Icons.close, color: Colors.white, size: 24)
-                    )
-                  )
-                ),
               ],
             );
           }
@@ -226,4 +248,4 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
       ),
     );
   }
-}
+  }

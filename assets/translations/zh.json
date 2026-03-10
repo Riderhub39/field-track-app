@@ -99,7 +99,14 @@
     "hold_still": "保持不动...",
     "success": "成功",
     "failed": "验证失败",
-    "tips": "请正对手机，保持光线充足。"
+    "tips": "请正对手机，保持光线充足。",
+    "hint_lighting": "未检测到面部。\n请检查光线！",
+    "hint_center": "请将面部居中",
+    "hint_closer": "请靠近一点",
+    "hint_straight": "请正视摄像头",
+    "hold": "请保持不动...",
+    "dialog_failed_desc": "人脸匹配失败。\n\n请确保：\n1. 光线充足（避免背光或过暗）。\n2. 摘下口罩，避免眼镜反光。\n3. 保持手机稳定。",
+    "retry": "重试"
   },
   "profile": {
     "title": "我的资料",

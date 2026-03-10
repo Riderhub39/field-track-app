@@ -51,6 +51,10 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
     if (_controller == null || !_controller!.value.isInitialized) return;
     if (appState == AppLifecycleState.inactive) {
       _controller?.dispose();
+      _controller = null;
+      if (mounted) {
+        setState(() => _isInitialized = false);
+      }
     } else if (appState == AppLifecycleState.resumed) {
       _initializeCamera();
     }
@@ -70,8 +74,8 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
         frontCamera,
         ResolutionPreset.high, 
         enableAudio: false,
-        imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
-      );
+       imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.nv21 : ImageFormatGroup.bgra8888,
+       );
 
       await _controller!.initialize();
       await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
@@ -120,24 +124,23 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         title: Text('camera.failed'.tr()),
-        content: const Text("Face mismatch. Please try again in better lighting."),
+        content: const Text("Face mismatch. Please retake the photo.\nWajah tidak sepadan. Sila ambil gambar semula."),
         actions: [
           ElevatedButton(
             onPressed: () {
-              Navigator.pop(context); 
-              ref.read(faceCameraProvider.notifier).resetCameraState(_controller);
+              Navigator.pop(context); // 1. 关闭这个 Dialog
+              Navigator.pop(context, 'failed'); // 2. 彻底退出相机界面，并返回 'failed' 标志
             },
-            child: const Text('Retry'),
+            child: const Text('OK'),
           )
         ],
       ),
     );
   }
 
+
   @override
   Widget build(BuildContext context) {
-    // 🚀 核心修复：必须将 ref.watch 放在所有提前 return 的最上方！
-    // 这样能保证 provider 在相机初始化期间不被销毁，保住正在下载图片的网络进程！
     final state = ref.watch(faceCameraProvider);
 
     ref.listen<FaceCameraState>(faceCameraProvider, (previous, next) {
@@ -154,7 +157,6 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
       }
     });
 
-    // 🟢 之后再执行 UI 的早期拦截
     if (_hasCameraError) {
       return Scaffold(
         backgroundColor: Colors.black,
@@ -226,36 +228,58 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: state.step == 0 ? Colors.white : (state.step == 1 ? Colors.greenAccent : Colors.blueAccent), 
+                  // 🟢 去掉 step 1，只有没扫到(0)和验证中(2)两种颜色
+                  color: state.step == 0 ? Colors.white : Colors.blueAccent, 
                   width: 4
                 ),
               ),
             ),
           ),
 
+          // 🟢 仅保留环境/灯光的 3 秒超时提示
+          if (state.showHelpTips && !state.isVerifying)
+            Positioned(
+              top: size.height * 0.05,
+              left: 20,
+              right: 20,
+              child: AnimatedOpacity(
+                opacity: state.showHelpTips ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 500),
+                child: Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.orangeAccent, width: 1.5),
+                  ),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.lightbulb_outline, color: Colors.orangeAccent, size: 28),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          "Make sure your face is well-lit and remove glasses/mask.\nPastikan wajah anda terang dan tanggalkan cermin mata/pelitup muka.",
+                          style: TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           Positioned(
-            bottom: size.height * 0.15, 
+            bottom: size.height * 0.12, 
             left: 20, right: 20,
             child: Column(
               children: [
-                if (state.step == 1)
-                  const Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.keyboard_double_arrow_up, color: Colors.greenAccent, size: 40),
-                      SizedBox(width: 8),
-                      Icon(Icons.face, color: Colors.greenAccent, size: 40),
-                      SizedBox(width: 8),
-                      Icon(Icons.keyboard_double_arrow_down, color: Colors.greenAccent, size: 40),
-                    ],
-                  ),
-                const SizedBox(height: 10),
+                // 🟢 彻底去除了原本 step == 1 时的箭头和笑脸图标
                 Text(
                   state.statusText,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: state.statusColor, 
-                    fontSize: 22, 
+                    fontSize: 20, 
                     fontWeight: FontWeight.bold,
                     shadows: const [Shadow(color: Colors.black, blurRadius: 4)]
                   ),

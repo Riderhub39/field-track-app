@@ -19,13 +19,13 @@ import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 
 // ==========================================
-// 1. 状态定义 (State) - 保持不变
+// 1. 状态定义 (State)
 // ==========================================
 class AttendanceState {
   // 用户数据
   final String staffName;
   final String employeeId;
-  final String myEmpCode; // User Doc ID
+  final String myEmpCode; 
   final ImageProvider? appBarImage;
   final String? referenceFaceIdPath;
   final bool isFetchingUser;
@@ -41,7 +41,7 @@ class AttendanceState {
   final XFile? capturedPhoto;
   final String selectedAction;
 
-  // 今日打卡缓存 (用于瞬间渲染 UI，无需重复请求)
+  // 今日打卡缓存
   final String todayInTime;
   final String todayOutTime;
   final String? lastSession;
@@ -60,7 +60,7 @@ class AttendanceState {
     this.appBarImage,
     this.referenceFaceIdPath,
     this.isFetchingUser = true,
-    this.currentAddress = "att.locating", // locale key
+    this.currentAddress = "att.locating", 
     this.initialPosition,
     this.markers = const {},
     this.isLoading = false,
@@ -131,17 +131,17 @@ class AttendanceState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🔴 CHANGED: 迁移到 Notifier (保持与原版一样非 autoDispose 的生命周期)
-class AttendanceNotifier extends Notifier<AttendanceState> {
+// 🟢 核心修改：改为 AutoDisposeNotifier，实现退出页面时“阅后即焚”
+class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
   StreamSubscription? _attendanceSub;
+  
+  // 🚀 优化：预缓存公司地址/网络设置，消除每次进入相机的加载延迟
+  Map<String, dynamic>? _officeSettingsCache;
 
-  // 🔴 CHANGED: 使用 build 方法初始化
   @override
   AttendanceState build() {
-    // 异步初始化
     _initAll();
     
-    // 🔴 CHANGED: 注册资源清理
     ref.onDispose(() {
       _attendanceSub?.cancel();
     });
@@ -156,10 +156,22 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       await _fetchUserData(user.uid);
       _listenToTodayAttendance(user.uid);
     }
+    _fetchOfficeSettings(); // 预缓存公司规则
     await _initLocation();
   }
 
-  // 全局只拉取一次用户数据，供所有 Tab 共享
+  // 提前缓存公司校验规则
+  Future<void> _fetchOfficeSettings() async {
+    try {
+      final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get(const GetOptions(source: Source.serverAndCache));
+      if (doc.exists) {
+        _officeSettingsCache = doc.data();
+      }
+    } catch (e) {
+      debugPrint("Failed to load office settings cache: $e");
+    }
+  }
+
   Future<void> _fetchUserData(String uid) async {
     try {
       final q = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: uid).limit(1).get();
@@ -188,7 +200,6 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
           }
         }
         
-        // 🔴 CHANGED: 移除 mounted
         state = state.copyWith(
           staffName: sName,
           employeeId: eId,
@@ -216,10 +227,9 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     return null;
   }
 
-  // 🟢 实时后台监听今日打卡，不再在点击打卡时阻塞查询
   void _listenToTodayAttendance(String uid) {
     final now = TimeService.now; 
-  final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
 
     _attendanceSub = FirebaseFirestore.instance
         .collection('attendance')
@@ -281,6 +291,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     }
   }
 
+  // 🚀 优化：缩短 GPS 获取超时时间，若网络差则立即使用上一次的坐标
   Future<Position?> _determinePosition() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return null;
@@ -289,9 +300,18 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) return null;
     }
-    return await Geolocator.getCurrentPosition(locationSettings: const LocationSettings(accuracy: LocationAccuracy.high));
+    try {
+      return await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 3), // 超时 3 秒即退回
+        ),
+      );
+    } catch (e) {
+      return await Geolocator.getLastKnownPosition();
+    }
   }
-
+  
   Future<String> _fetchAddressString(Position position) async {
     try {
       List<Placemark> placemarks = await placemarkFromCoordinates(position.latitude, position.longitude);
@@ -308,18 +328,22 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     return "GPS: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}";
   }
 
-  // 🟢 核心打卡校验逻辑
+  // 🚀 优化：通过预加载的数据进行光速验证
   Future<String?> validateRestrictionsAndSetAction(String action) async {
-    state = state.copyWith(isLoading: true, clearMessages: true);
+    state = state.copyWith(isLoading: true, clearMessages: true, clearPhoto: true);
     
     try {
-      final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get();
-      if (!doc.exists) {
-        state = state.copyWith(selectedAction: action);
-        return null; // 没设限制，允许放行
+      if (_officeSettingsCache == null) {
+        await _fetchOfficeSettings();
       }
       
-      final data = doc.data() as Map<String, dynamic>;
+      // 如果完全没网也拉取不到配置，暂予放行（记录会在网络恢复后同步）
+      if (_officeSettingsCache == null) {
+         state = state.copyWith(selectedAction: action);
+         return null;
+      }
+      
+      final data = _officeSettingsCache!;
       final double officeLat = (data['latitude'] as num).toDouble();
       final double officeLng = (data['longitude'] as num).toDouble();
       final double allowedRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
@@ -352,7 +376,6 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
         bool isWifiValid = false;
 
-        // 开发模式后门：放行模拟器网络
         if (kDebugMode && (currentSSID == 'AndroidWifi' || currentBSSID == '02:00:00:00:00:00' || currentBSSID == null)) {
           isWifiValid = true;
         } else {
@@ -361,7 +384,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
             bool bssidMatch = true;
             if (config['bssid'] != null && config['bssid']!.isNotEmpty) {
                if (currentBSSID == null) {
-                 throw "Unable to verify WiFi security.\nPlease enable GPS/Location permission.";
+                 throw "Not connected to company Wifi.Please connect to clock.";
                }
                bssidMatch = config['bssid'] == currentBSSID;
             }
@@ -390,9 +413,9 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       }
 
       state = state.copyWith(selectedAction: action);
-      return null; // 验证通过
+      return null; 
     } catch (e) {
-      return e.toString(); // 返回错误给 UI
+      return e.toString(); 
     } finally {
       state = state.copyWith(isLoading: false);
     }
@@ -402,10 +425,16 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
     state = state.copyWith(capturedPhoto: photo);
   }
 
+  // 🚀 新增：清空当前照片（防止造假重用）
+  void clearCapturedPhoto() {
+    state = state.copyWith(clearPhoto: true);
+  }
+
   void clearMessages() {
     state = state.copyWith(clearMessages: true);
   }
 
+  // 🚀 核心优化：弱网/无网打卡架构
   Future<void> submitAttendance() async {
     if (state.capturedPhoto == null || state.isProcessingAction) return;
 
@@ -416,7 +445,7 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
 
     final XFile photoFile = state.capturedPhoto!;
     final String action = state.selectedAction;
-    final DateTime actionTime = (TimeService.now); 
+    final DateTime actionTime = TimeService.now; 
     final String uid = user.uid;
 
     try {
@@ -424,18 +453,10 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
       if (position == null) throw "GPS Signal Lost";
 
       String addressStr = await _fetchAddressString(position);
-
-      String fileName = '${actionTime.millisecondsSinceEpoch}.jpg';
-      Reference storageRef = FirebaseStorage.instance
-          .ref()
-          .child('attendance_photos')
-          .child(uid)
-          .child(fileName);
-      
-      await storageRef.putFile(File(photoFile.path));
-      String photoUrl = await storageRef.getDownloadURL();
-
       final todayStr = DateFormat('yyyy-MM-dd').format(actionTime);
+
+      // 🟢 优先写入 Firestore，它原生支持离线缓冲！即使网络很差只要没报错立刻就视为成功打卡
+      final docRef = FirebaseFirestore.instance.collection('attendance').doc();
       
       Map<String, dynamic> newRecord = {
         'uid': uid,
@@ -446,11 +467,12 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         'session': action, 
         'location': GeoPoint(position.latitude, position.longitude),
         'address': addressStr,
-        'photoUrl': photoUrl, 
+        'photoUrl': "pending", // 先使用占位符，由后台更新
+        'localPhotoPath': photoFile.path, 
         'timestamp': Timestamp.fromDate(actionTime), 
       };
 
-      await FirebaseFirestore.instance.collection('attendance').add(newRecord);
+      await docRef.set(newRecord);
 
       // 触发后台轨迹追踪
       if (action == 'Clock In' || action == 'Break In') {
@@ -459,29 +481,50 @@ class AttendanceNotifier extends Notifier<AttendanceState> {
         ref.read(trackingProvider.notifier).stopTracking();
       }
 
-      // 🟢 格式化时间为 12小时制带 am/pm (例如: 9:30 AM)
       final actionTimeStr = DateFormat('h:mm a').format(actionTime);
-      // 🟢 将 action (Clock In/Out) 转为小写以适应句子
       final formattedAction = action.toLowerCase(); 
 
+      // 🟢 告诉用户成功并光速清空相片！不等待云存储上传！
       state = state.copyWith(
         isProcessingAction: false, 
         clearPhoto: true, 
-        // 🟢 注入带时间和动作的精准提示
         successMessage: "You have successfully $formattedAction at $actionTimeStr" 
       );
 
+      // 🟢 静默将图片抛入后台上传，上传成功后补填 URL
+      _uploadPhotoBackground(docRef, uid, photoFile, actionTime);
+
     } catch (e) {
-      debugPrint("Upload failed: $e");
+      debugPrint("Submit failed: $e");
       state = state.copyWith(
         isProcessingAction: false, 
-        errorMessage: "Upload Failed. Please check your connection or try again later."
+        errorMessage: "Operation Failed: Please try again."
       );
+    }
+  }
+
+  // 独立出的后台上传函数
+  Future<void> _uploadPhotoBackground(DocumentReference docRef, String uid, XFile photoFile, DateTime actionTime) async {
+    try {
+      String fileName = '${actionTime.millisecondsSinceEpoch}.jpg';
+      Reference storageRef = FirebaseStorage.instance
+          .ref()
+          .child('attendance_photos')
+          .child(uid)
+          .child(fileName);
+      
+      await storageRef.putFile(File(photoFile.path));
+      String photoUrl = await storageRef.getDownloadURL();
+
+      await docRef.update({'photoUrl': photoUrl});
+    } catch (e) {
+      debugPrint("Background photo upload failed (queued for sync): $e");
+      // 网络断开导致上传 Storage 失败。但没关系，精准的打卡时间已被 Firestore 接管
     }
   }
 }
 
-// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
-final attendanceProvider = NotifierProvider<AttendanceNotifier, AttendanceState>(() {
+// 🟢 核心修改：加上 .autoDispose
+final attendanceProvider = NotifierProvider.autoDispose<AttendanceNotifier, AttendanceState>(() {
   return AttendanceNotifier();
 });

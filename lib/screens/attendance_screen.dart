@@ -11,23 +11,20 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../widgets/shimmer_loading.dart';
 import '../widgets/face_camera_view.dart';
 import 'correction_request_screen.dart';
-
-// 🟢 引入控制器
 import 'attendance_controller.dart'; 
 
 class AttendanceScreen extends ConsumerWidget {
   const AttendanceScreen({super.key});
 
-@override
+  @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(attendanceProvider);
 
-    // 🟢 新增：监听状态变化并弹出提示框
     ref.listen(attendanceProvider, (previous, next) {
       if (next.successMessage != null && next.successMessage != previous?.successMessage) {
         showDialog(
           context: context,
-          barrierDismissible: false, // 强制用户点击按钮关闭
+          barrierDismissible: false, 
           builder: (ctx) => AlertDialog(
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: const Row( 
@@ -45,7 +42,7 @@ class AttendanceScreen extends ConsumerWidget {
               TextButton(
                 style: TextButton.styleFrom(
                   foregroundColor: Colors.white,
-                  backgroundColor: const Color(0xFF15438c), // 你的主题蓝
+                  backgroundColor: const Color(0xFF15438c),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
                 onPressed: () {
@@ -61,7 +58,6 @@ class AttendanceScreen extends ConsumerWidget {
         );
       }
       
-      // 如果你之前有错误信息的监听，可以保留在这里
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red),
@@ -134,11 +130,12 @@ class AttendanceActionTab extends ConsumerStatefulWidget {
 class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   final Completer<GoogleMapController> _mapController = Completer();
 
+  
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(attendanceProvider);
 
-    // 🟢 统一的异常与成功弹窗监听
     ref.listen<AttendanceState>(attendanceProvider, (previous, next) {
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         showDialog(
@@ -324,7 +321,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                           ),
                         );
                       } else {
-                        // 🟢 提交
                         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                           content: Text("att.msg_queueing".tr(args: [_getActionDisplayText(state.selectedAction)])),
                           backgroundColor: Colors.blue,
@@ -354,8 +350,9 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   void _showActionPicker(AttendanceState state) {
     if (state.lastPunchTime != null) {
       final difference = DateTime.now().difference(state.lastPunchTime!);
-      if (difference.inMinutes < 30) {
-        final waitMinutes = 30 - difference.inMinutes;
+      // 🚀 核心优化：将打卡时间锁定限制从 30 分钟改为了 5 分钟
+      if (difference.inMinutes < 5) {
+        final waitMinutes = 5 - difference.inMinutes;
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
@@ -447,7 +444,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     Navigator.pop(context); 
     final error = await ref.read(attendanceProvider.notifier).validateRestrictionsAndSetAction(action);
     
-    // Guarding mounted after async gap
     if (!mounted) return;
     
     if (error != null) {
@@ -467,15 +463,25 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       return;
     }
 
-    // 跳转验证
+    // 跳转到相机页面，等待结果
     final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => FaceCameraView(referencePath: state.referenceFaceIdPath))
     ); 
 
-    // Guarding mounted after Navigator async gap
     if (!mounted) return;
 
+    // 🟢 拦截到验证失败信号，展示提示
+    if (result == 'failed') {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text("Face mismatch. Please try again in better lighting."),
+        backgroundColor: Colors.red,
+        duration: Duration(seconds: 3),
+      ));
+      return;
+    }
+
+    // 🟢 如果成功，正常拿到彩色 XFile 照片展示
     if (result != null && result is XFile) {
       ref.read(attendanceProvider.notifier).setCapturedPhoto(result);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -516,7 +522,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 }
 
 // ==========================================
-//  Tab 2: History
+//  Tab 2: History (保持不变)
 // ==========================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
@@ -646,7 +652,7 @@ class _HistoryTabState extends State<HistoryTab> {
 }
 
 // ==========================================
-//  Tab 3: Schedule Tab 
+//  Tab 3: Schedule Tab (保持不变)
 // ==========================================
 class ScheduleTab extends ConsumerStatefulWidget {
   const ScheduleTab({super.key});
@@ -675,7 +681,7 @@ class _ScheduleTabState extends ConsumerState<ScheduleTab> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(attendanceProvider); // 🟢 直接读取全局缓存的 EmpCode
+    final state = ref.watch(attendanceProvider);
     if (state.isFetchingUser) return const Center(child: CircularProgressIndicator());
     if (state.myEmpCode.isEmpty) return Center(child: Text("att.err_profile_not_linked".tr()));
 
@@ -914,7 +920,7 @@ class _ScheduleTabState extends ConsumerState<ScheduleTab> {
 }
 
 // ==========================================
-//  Tab 4: Submit Tab
+//  Tab 4: Submit Tab (保持不变)
 // ==========================================
 class SubmitTab extends ConsumerStatefulWidget {
   const SubmitTab({super.key});
@@ -941,7 +947,7 @@ class _SubmitTabState extends ConsumerState<SubmitTab> {
 
   @override
   Widget build(BuildContext context) {
-    final state = ref.watch(attendanceProvider); // 🟢 直接读取全局缓存的 EmpCode
+    final state = ref.watch(attendanceProvider);
     if (state.isFetchingUser) return const Center(child: CircularProgressIndicator());
     if (state.myEmpCode.isEmpty) return Center(child: Text("att.err_profile_not_linked".tr()));
 

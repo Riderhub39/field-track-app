@@ -99,7 +99,14 @@
     "hold_still": "Jangan Bergerak...",
     "success": "Berjaya",
     "failed": "Pengesahan Gagal",
-    "tips": "Pastikan pencahayaan baik dan pandang kamera."
+    "tips": "Pastikan pencahayaan baik dan pandang kamera.",
+    "hint_lighting": "Tiada wajah dikesan.\nPeriksa pencahayaan!",
+    "hint_center": "Posisikan wajah di tengah",
+    "hint_closer": "Sila dekat sikit",
+    "hint_straight": "Pandang lurus ke kamera",
+    "hold": "Jangan bergerak...",
+    "dialog_failed_desc": "Wajah tidak sepadan.\n\nPastikan:\n1. Pencahayaan baik (tidak terlalu gelap/silau).\n2. Tiada pelitup muka atau cermin mata silau.\n3. Pegang telefon dengan stabil.",
+    "retry": "Cuba Lagi"
   },
   "profile": {
     "title": "Profil Saya",

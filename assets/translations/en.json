@@ -99,7 +99,14 @@
     "hold_still": "Hold Still...",
     "success": "Success",
     "failed": "Verification Failed",
-    "tips": "Ensure good lighting and face camera directly."
+    "tips": "Ensure good lighting and face camera directly.",
+    "hint_lighting": "No face detected.\nCheck lighting!",
+    "hint_center": "Center your face",
+    "hint_closer": "Move a bit closer",
+    "hint_straight": "Look straight at camera",
+    "hold": "Hold still...",
+    "dialog_failed_desc": "Face mismatch.\n\nPlease ensure:\n1. Good lighting (not backlit).\n2. No masks or heavy glare on glasses.\n3. Keep your phone steady.",
+    "retry": "Retry"
   },
   "profile": {
     "title": "My Profile",
