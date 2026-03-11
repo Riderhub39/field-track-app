@@ -22,6 +22,70 @@ class HomeScreen extends ConsumerWidget {
 
   // ========== UI Action Helpers ==========
 
+  // 🟢 自动弹出的更新提示框
+ // 🟢 自动弹出的更新提示框
+  void _showAutoUpdateDialog(BuildContext context, WidgetRef ref, String latestVersion, String releaseNotes, String apkUrl, bool forceUpdate) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // 强制用户必须做出选择，不能点击背景关闭
+      builder: (ctx) => PopScope( // 🟢 修复 1：使用 PopScope 替代 WillPopScope
+        canPop: !forceUpdate,     // 🟢 只有非强制更新时才允许返回键关闭
+        child: AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          title: Row(
+            children: [
+              const Icon(Icons.new_releases, color: Colors.blue, size: 28),
+              const SizedBox(width: 10),
+              Text("Version $latestVersion", style: const TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text("A new version is available!", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 12),
+              const Text("What's New:", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 4),
+              Text(releaseNotes, style: const TextStyle(fontSize: 14)),
+            ],
+          ),
+          actions: [
+            // 如果不是强制更新，显示 "Later" 按钮
+            if (!forceUpdate)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  ref.read(homeProvider.notifier).dismissUpdatePrompt();
+                }, 
+                child: const Text("Later", style: TextStyle(color: Colors.grey)),
+              ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+              onPressed: () async {
+                // 点击更新，使用外部浏览器打开链接开始下载
+                final Uri url = Uri.parse(apkUrl);
+                if (await canLaunchUrl(url)) {
+                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                }
+                
+                // 🟢 修复 2：在跨越 async 间隙后，使用 ctx 前必须检查 mounted
+                if (!ctx.mounted) return;
+
+                // 只有非强更时才允许关闭弹窗
+                if (!forceUpdate) {
+                  Navigator.pop(ctx);
+                  ref.read(homeProvider.notifier).dismissUpdatePrompt();
+                }
+              },
+              child: const Text("Update Now", style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
   void _showLogoutDialog(BuildContext context, String reason, WidgetRef ref) {
     showDialog(
       context: context,
@@ -184,6 +248,18 @@ class HomeScreen extends ConsumerWidget {
 
     // 🟢 统一的弹窗/Toast 事件监听中心
     ref.listen<HomeState>(homeProvider, (previous, next) {
+      // 🚀 新增：监听自动版本更新
+      if (next.shouldShowUpdatePrompt && !(previous?.shouldShowUpdatePrompt ?? false)) {
+        _showAutoUpdateDialog(
+          context, 
+          ref,
+          next.updateLatestVersion ?? '', 
+          next.updateReleaseNotes ?? '', 
+          next.updateApkUrl ?? '', 
+          next.forceUpdate
+        );
+      }
+
       // 被踢下线或账号禁用
       if (next.shouldShowLogoutDialog && !(previous?.shouldShowLogoutDialog ?? false)) {
         _showLogoutDialog(context, next.logoutReason, ref);

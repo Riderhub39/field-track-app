@@ -9,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'notification_service.dart';
 import 'local_db_service.dart';
 import 'time_service.dart';
+import 'package:firebase_database/firebase_database.dart';
+
 final trackingProvider = NotifierProvider<TrackingNotifier, bool>(() {
   return TrackingNotifier();
 });
@@ -43,10 +45,10 @@ class TrackingNotifier extends Notifier<bool> {
   // 1. 会话生命周期 (指挥官逻辑)
   // ==========================================
 
-  Future<void> resumeTrackingSession(String authUid) async {
+ Future<void> resumeTrackingSession(String authUid) async {
     debugPrint("🔄 Attempting to resume tracking session for $authUid...");
     final now = TimeService.now;
-  final todayStr = DateFormat('yyyy-MM-dd').format(now);
+    final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
     try {
       final attQuery = await FirebaseFirestore.instance
@@ -65,8 +67,36 @@ class TrackingNotifier extends Notifier<bool> {
           validDocs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
           final lastSession = validDocs.last.data()['session'];
 
-          if ((lastSession == 'Clock In' || lastSession == 'Break In') && !state) {
-            await startTracking(authUid, isResume: true);
+          // 🟢 如果当前是正在打卡的状态
+          if (lastSession == 'Clock In' || lastSession == 'Break In') {
+            // 1. 如果后台服务还没启动，启动它
+            if (!state) {
+              await startTracking(authUid, isResume: true);
+            }
+
+            // 🚀 2. 核心修复：无论是刚唤醒还是已经跑着，只要处于打卡期间打开App，强制推送一次最新位置给网页端
+            try {
+              LocationPermission permission = await Geolocator.checkPermission();
+              if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+                
+                // 获取当前精准坐标 (增加 10秒超时防止死锁)
+                Position pos = await Geolocator.getCurrentPosition(
+                  locationSettings: const LocationSettings(accuracy: LocationAccuracy.high)
+                ).timeout(const Duration(seconds: 10));
+
+                // 推送到 Firebase RTDB
+                await FirebaseDatabase.instance.ref("live_locations/$authUid").update({
+                  'uid': authUid,
+                  'lat': pos.latitude,
+                  'lng': pos.longitude,
+                  'lastUpdate': ServerValue.timestamp,
+                });
+                debugPrint("✅ [App Resume] Force pushed location to Live Tracking");
+              }
+            } catch (e) {
+              debugPrint("❌ [App Resume] Location Push Failed: $e");
+            }
+            
           } else if (state && (lastSession == 'Clock Out' || lastSession == 'Break Out')) {
             await stopTracking();
           }

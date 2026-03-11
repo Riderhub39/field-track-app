@@ -17,7 +17,7 @@ import '../services/time_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
-
+import 'package:firebase_database/firebase_database.dart';
 // ==========================================
 // 1. 状态定义 (State)
 // ==========================================
@@ -477,6 +477,18 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       // 触发后台轨迹追踪
       if (action == 'Clock In' || action == 'Break In') {
         ref.read(trackingProvider.notifier).startTracking(uid);
+        try {
+          FirebaseDatabase.instance.ref("live_locations/$uid").update({
+            'uid': uid,
+            'lat': position.latitude,
+            'lng': position.longitude,
+            'speed': 0.0, // 初始静止状态
+            'heading': 0.0,
+            'lastUpdate': ServerValue.timestamp, // 兼容你后台的读取逻辑
+          });
+        } catch (e) {
+          debugPrint("❌ Init Location Upload Failed: $e");
+        }
       } else if (action == 'Break Out' || action == 'Clock Out') {
         ref.read(trackingProvider.notifier).stopTracking();
       }

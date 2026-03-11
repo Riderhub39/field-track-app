@@ -8,7 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
+import 'package:package_info_plus/package_info_plus.dart'; // 🟢 确保引入
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart';
@@ -28,6 +28,13 @@ class HomeState {
   final Map<String, dynamic>? announcementData;
   final bool shouldShowBiometricPrompt;
   
+  // 🟢 自动更新弹窗状态
+  final bool shouldShowUpdatePrompt;
+  final String? updateLatestVersion;
+  final String? updateReleaseNotes;
+  final String? updateApkUrl;
+  final bool forceUpdate;
+  
   // 提示信息
   final String? successMessage;
   final String? errorMessage;
@@ -42,6 +49,11 @@ class HomeState {
     this.shouldShowBiometricPrompt = false,
     this.successMessage,
     this.errorMessage,
+    this.shouldShowUpdatePrompt = false,
+    this.updateLatestVersion,
+    this.updateReleaseNotes,
+    this.updateApkUrl,
+    this.forceUpdate = false,
   });
 
   HomeState copyWith({
@@ -55,6 +67,11 @@ class HomeState {
     String? successMessage,
     String? errorMessage,
     bool clearMessages = false,
+    bool? shouldShowUpdatePrompt,
+    String? updateLatestVersion,
+    String? updateReleaseNotes,
+    String? updateApkUrl,
+    bool? forceUpdate,
   }) {
     return HomeState(
       staffName: staffName ?? this.staffName,
@@ -66,6 +83,11 @@ class HomeState {
       shouldShowBiometricPrompt: shouldShowBiometricPrompt ?? this.shouldShowBiometricPrompt,
       successMessage: clearMessages ? null : (successMessage ?? this.successMessage),
       errorMessage: clearMessages ? null : (errorMessage ?? this.errorMessage),
+      shouldShowUpdatePrompt: shouldShowUpdatePrompt ?? this.shouldShowUpdatePrompt,
+      updateLatestVersion: updateLatestVersion ?? this.updateLatestVersion,
+      updateReleaseNotes: updateReleaseNotes ?? this.updateReleaseNotes,
+      updateApkUrl: updateApkUrl ?? this.updateApkUrl,
+      forceUpdate: forceUpdate ?? this.forceUpdate,
     );
   }
 }
@@ -93,6 +115,7 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 
   void _initAll() {
+    _checkForUpdates(); // 🟢 1. 第一时间在后台静默检查是否有新版本
     _listenToUserStatus();
     _startDeviceMonitoring();
     _listenForAnnouncements();
@@ -106,6 +129,42 @@ class HomeNotifier extends Notifier<HomeState> {
     // 这里原先设定了 1 秒延迟
     debugPrint("⏳ [HomeNotifier] Queuing Biometric Check in 1 second...");
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
+  }
+
+  // 🚀 新增：静默检查更新逻辑
+  Future<void> _checkForUpdates() async {
+    try {
+      PackageInfo packageInfo = await PackageInfo.fromPlatform();
+      String currentVersion = packageInfo.version;
+
+      DocumentSnapshot doc = await FirebaseFirestore.instance.collection('settings').doc('app_version').get();
+
+      if (doc.exists && doc.data() != null) {
+        final data = doc.data() as Map<String, dynamic>;
+        String latestVersion = data['latest_version'] ?? currentVersion;
+        String apkUrl = data['apk_url'] ?? "";
+        String releaseNotes = data['release_notes'] ?? "New version is available.";
+        bool isForce = data['force_update'] ?? false; // 数据库可以控制是否强更
+
+        if (currentVersion != latestVersion && apkUrl.isNotEmpty) {
+          // 发现新版本，触发状态更新通知 UI 弹窗
+          state = state.copyWith(
+            shouldShowUpdatePrompt: true,
+            updateLatestVersion: latestVersion,
+            updateReleaseNotes: releaseNotes,
+            updateApkUrl: apkUrl,
+            forceUpdate: isForce,
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint("Auto Update Check Failed: $e");
+    }
+  }
+
+  // 🚀 新增：用于用户点击稍后更新时关闭弹窗
+  void dismissUpdatePrompt() {
+    state = state.copyWith(shouldShowUpdatePrompt: false);
   }
 
   void clearMessages() {
