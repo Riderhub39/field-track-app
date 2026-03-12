@@ -188,7 +188,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
 
                       // 3. 水印文字（紧贴底部边界，即紧贴下方的黑色控制区）
                       Positioned(
-                        bottom: 12, // 距离相机预览区底部的间距
+                        bottom: 20, // 距离相机预览区底部的间距
                         right: 15, 
                         left: 15, 
                         child: Column(
@@ -212,7 +212,11 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
                   width: double.infinity,
                   height: 140, // 黑色区域的固定高度
                   color: Colors.black,
-                  child: Center(
+                  child: Align(
+                    // 💡 将 alignment 从 Center 改为 Align
+                    // y 轴范围从 -1.0 (顶部) 到 1.0 (底部)。
+                    // 设置为 -0.3 会让按钮从中心点稍微向上移动。
+                    alignment: const Alignment(0, -0.3), 
                     child: GestureDetector(
                       onTap: () {
                         if (state.isReady) {

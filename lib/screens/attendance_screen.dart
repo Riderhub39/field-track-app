@@ -20,7 +20,14 @@ class AttendanceScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(attendanceProvider);
 
+    // 🟢 统一监听器：处理 PDPA 弹窗及反馈消息
     ref.listen(attendanceProvider, (previous, next) {
+      // 1. PDPA 定位授权询问
+      if (next.shouldShowLocationConsent && !(previous?.shouldShowLocationConsent ?? false)) {
+        _showPDPADialog(context, ref);
+      }
+
+      // 2. 成功打卡弹窗
       if (next.successMessage != null && next.successMessage != previous?.successMessage) {
         showDialog(
           context: context,
@@ -58,6 +65,7 @@ class AttendanceScreen extends ConsumerWidget {
         );
       }
       
+      // 3. 错误消息提示
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red),
@@ -116,6 +124,50 @@ class AttendanceScreen extends ConsumerWidget {
       ),
     );
   }
+
+  // 🟢 模块：PDPA 定位授权询问弹窗
+  void _showPDPADialog(BuildContext context, WidgetRef ref) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // 强制用户做出选择
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            const Icon(Icons.privacy_tip_outlined, color: Color(0xFF15438c), size: 28),
+            const SizedBox(width: 10),
+            Text("att.pdpa_title".tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          "att.pdpa_content".tr(),
+          style: const TextStyle(fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          // 🟢 Ignore 按钮：点击后永久标记不再提醒
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              ref.read(attendanceProvider.notifier).completePDPAConsent(permanently: true);
+            },
+            child: Text("att.btn_ignore".tr(), style: const TextStyle(color: Colors.grey)),
+          ),
+          // 🟢 Consent 按钮：仅同意本次，下次进入若未设置永久忽略仍会提醒
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF15438c),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              ref.read(attendanceProvider.notifier).completePDPAConsent(permanently: false);
+            },
+            child: Text("att.btn_consent".tr(), style: const TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ==========================================
@@ -130,30 +182,9 @@ class AttendanceActionTab extends ConsumerStatefulWidget {
 class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   final Completer<GoogleMapController> _mapController = Completer();
 
-  
-
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(attendanceProvider);
-
-    ref.listen<AttendanceState>(attendanceProvider, (previous, next) {
-      if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("Notice"), 
-            content: Text(next.errorMessage!),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
-          ),
-        );
-        ref.read(attendanceProvider.notifier).clearMessages();
-      }
-
-      if (next.successMessage != null && next.successMessage != previous?.successMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!), backgroundColor: Colors.green));
-        ref.read(attendanceProvider.notifier).clearMessages();
-      }
-    });
 
     if (state.isFetchingUser || state.isLoading) {
       return const Center(child: CircularProgressIndicator());
@@ -247,7 +278,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                 const Divider(color: Colors.white54),
                 const SizedBox(height: 15),
 
-                // 今日打卡预览
                 Row(
                   children: [
                     Expanded(child: _buildActionTimeBox("att.label_in".tr(), state.todayInTime)),
@@ -350,7 +380,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
   void _showActionPicker(AttendanceState state) {
     if (state.lastPunchTime != null) {
       final difference = DateTime.now().difference(state.lastPunchTime!);
-      // 🚀 核心优化：将打卡时间锁定限制从 30 分钟改为了 5 分钟
       if (difference.inMinutes < 5) {
         final waitMinutes = 5 - difference.inMinutes;
         showDialog(
@@ -463,7 +492,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       return;
     }
 
-    // 跳转到相机页面，等待结果
     final result = await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => FaceCameraView(referencePath: state.referenceFaceIdPath))
@@ -471,7 +499,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 
     if (!mounted) return;
 
-    // 🟢 拦截到验证失败信号，展示提示
     if (result == 'failed') {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
         content: Text("Face mismatch. Please try again in better lighting."),
@@ -481,7 +508,6 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
       return;
     }
 
-    // 🟢 如果成功，正常拿到彩色 XFile 照片展示
     if (result != null && result is XFile) {
       ref.read(attendanceProvider.notifier).setCapturedPhoto(result);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

@@ -13,11 +13,13 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // 🟢 引入插件
 import '../services/time_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 import 'package:firebase_database/firebase_database.dart';
+
 // ==========================================
 // 1. 状态定义 (State)
 // ==========================================
@@ -40,6 +42,9 @@ class AttendanceState {
   final bool isProcessingAction;
   final XFile? capturedPhoto;
   final String selectedAction;
+
+  // 🟢 PDPA 相关
+  final bool shouldShowLocationConsent; // 是否显示 PDPA 询问
 
   // 今日打卡缓存
   final String todayInTime;
@@ -67,6 +72,7 @@ class AttendanceState {
     this.isProcessingAction = false,
     this.capturedPhoto,
     this.selectedAction = "Clock In",
+    this.shouldShowLocationConsent = false, // 默认不显示
     this.todayInTime = "--:--",
     this.todayOutTime = "--:--",
     this.lastSession,
@@ -91,6 +97,7 @@ class AttendanceState {
     bool? isProcessingAction,
     XFile? capturedPhoto,
     String? selectedAction,
+    bool? shouldShowLocationConsent,
     String? todayInTime,
     String? todayOutTime,
     String? lastSession,
@@ -116,6 +123,7 @@ class AttendanceState {
       isProcessingAction: isProcessingAction ?? this.isProcessingAction,
       capturedPhoto: clearPhoto ? null : (capturedPhoto ?? this.capturedPhoto),
       selectedAction: selectedAction ?? this.selectedAction,
+      shouldShowLocationConsent: shouldShowLocationConsent ?? this.shouldShowLocationConsent,
       todayInTime: todayInTime ?? this.todayInTime,
       todayOutTime: todayOutTime ?? this.todayOutTime,
       lastSession: lastSession ?? this.lastSession,
@@ -131,11 +139,8 @@ class AttendanceState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🟢 核心修改：改为 AutoDisposeNotifier，实现退出页面时“阅后即焚”
 class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
   StreamSubscription? _attendanceSub;
-  
-  // 🚀 优化：预缓存公司地址/网络设置，消除每次进入相机的加载延迟
   Map<String, dynamic>? _officeSettingsCache;
 
   @override
@@ -150,17 +155,47 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
   }
 
   Future<void> _initAll() async {
+    // 🟢 1. 优先检查 PDPA 状态
+    await _checkPDPAConsent();
+
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       NotificationService().bindFCMToken(user.uid);
       await _fetchUserData(user.uid);
       _listenToTodayAttendance(user.uid);
     }
-    _fetchOfficeSettings(); // 预缓存公司规则
+    _fetchOfficeSettings(); 
+    
+    // 🟢 2. 只有在不需要显示弹窗（即已 Ignore）时，才自动执行定位
+    if (!state.shouldShowLocationConsent) {
+      await _initLocation();
+    }
+  }
+
+  // 🟢 核心逻辑：检查是否需要显示 PDPA 询问
+  Future<void> _checkPDPAConsent() async {
+    final prefs = await SharedPreferences.getInstance();
+    // 检查是否永久忽略了该提醒
+    bool hasIgnored = prefs.getBool('has_ignored_pdpa_permanently') ?? false;
+    
+    if (!hasIgnored) {
+      state = state.copyWith(shouldShowLocationConsent: true);
+    }
+  }
+
+  // 🟢 核心逻辑：完成 PDPA 授权流程
+  Future<void> completePDPAConsent({required bool permanently}) async {
+    if (permanently) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_ignored_pdpa_permanently', true);
+    }
+    
+    state = state.copyWith(shouldShowLocationConsent: false);
+    
+    // 用户操作后，无论点击哪个，立刻开始初始化位置（本次会话允许使用位置）
     await _initLocation();
   }
 
-  // 提前缓存公司校验规则
   Future<void> _fetchOfficeSettings() async {
     try {
       final doc = await FirebaseFirestore.instance.collection('settings').doc('office_location').get(const GetOptions(source: Source.serverAndCache));
@@ -291,7 +326,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     }
   }
 
-  // 🚀 优化：缩短 GPS 获取超时时间，若网络差则立即使用上一次的坐标
   Future<Position?> _determinePosition() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return null;
@@ -304,7 +338,7 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       return await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 3), // 超时 3 秒即退回
+          timeLimit: Duration(seconds: 3), 
         ),
       );
     } catch (e) {
@@ -328,7 +362,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     return "GPS: ${position.latitude.toStringAsFixed(4)}, ${position.longitude.toStringAsFixed(4)}";
   }
 
-  // 🚀 优化：通过预加载的数据进行光速验证
   Future<String?> validateRestrictionsAndSetAction(String action) async {
     state = state.copyWith(isLoading: true, clearMessages: true, clearPhoto: true);
     
@@ -337,7 +370,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
         await _fetchOfficeSettings();
       }
       
-      // 如果完全没网也拉取不到配置，暂予放行（记录会在网络恢复后同步）
       if (_officeSettingsCache == null) {
          state = state.copyWith(selectedAction: action);
          return null;
@@ -348,7 +380,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       final double officeLng = (data['longitude'] as num).toDouble();
       final double allowedRadius = (data['radius'] as num?)?.toDouble() ?? 500.0;
 
-      // WiFi 校验
       List<Map<String, String>> allowedWifiList = [];
       if (data['allowedWifis'] is List) {
         for (var item in data['allowedWifis']) {
@@ -400,7 +431,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
         }
       }
 
-      // GPS 距离校验
       Position? currentPos = await _determinePosition();
       if (currentPos == null) throw "Cannot determine GPS location.";
 
@@ -425,7 +455,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     state = state.copyWith(capturedPhoto: photo);
   }
 
-  // 🚀 新增：清空当前照片（防止造假重用）
   void clearCapturedPhoto() {
     state = state.copyWith(clearPhoto: true);
   }
@@ -434,7 +463,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     state = state.copyWith(clearMessages: true);
   }
 
-  // 🚀 核心优化：弱网/无网打卡架构
   Future<void> submitAttendance() async {
     if (state.capturedPhoto == null || state.isProcessingAction) return;
 
@@ -455,7 +483,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       String addressStr = await _fetchAddressString(position);
       final todayStr = DateFormat('yyyy-MM-dd').format(actionTime);
 
-      // 🟢 优先写入 Firestore，它原生支持离线缓冲！即使网络很差只要没报错立刻就视为成功打卡
       final docRef = FirebaseFirestore.instance.collection('attendance').doc();
       
       Map<String, dynamic> newRecord = {
@@ -467,14 +494,13 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
         'session': action, 
         'location': GeoPoint(position.latitude, position.longitude),
         'address': addressStr,
-        'photoUrl': "pending", // 先使用占位符，由后台更新
+        'photoUrl': "pending", 
         'localPhotoPath': photoFile.path, 
         'timestamp': Timestamp.fromDate(actionTime), 
       };
 
       await docRef.set(newRecord);
 
-      // 触发后台轨迹追踪
       if (action == 'Clock In' || action == 'Break In') {
         ref.read(trackingProvider.notifier).startTracking(uid);
         try {
@@ -482,9 +508,9 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
             'uid': uid,
             'lat': position.latitude,
             'lng': position.longitude,
-            'speed': 0.0, // 初始静止状态
+            'speed': 0.0, 
             'heading': 0.0,
-            'lastUpdate': ServerValue.timestamp, // 兼容你后台的读取逻辑
+            'lastUpdate': ServerValue.timestamp, 
           });
         } catch (e) {
           debugPrint("❌ Init Location Upload Failed: $e");
@@ -496,14 +522,12 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       final actionTimeStr = DateFormat('h:mm a').format(actionTime);
       final formattedAction = action.toLowerCase(); 
 
-      // 🟢 告诉用户成功并光速清空相片！不等待云存储上传！
       state = state.copyWith(
         isProcessingAction: false, 
         clearPhoto: true, 
         successMessage: "You have successfully $formattedAction at $actionTimeStr" 
       );
 
-      // 🟢 静默将图片抛入后台上传，上传成功后补填 URL
       _uploadPhotoBackground(docRef, uid, photoFile, actionTime);
 
     } catch (e) {
@@ -515,7 +539,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     }
   }
 
-  // 独立出的后台上传函数
   Future<void> _uploadPhotoBackground(DocumentReference docRef, String uid, XFile photoFile, DateTime actionTime) async {
     try {
       String fileName = '${actionTime.millisecondsSinceEpoch}.jpg';
@@ -530,13 +553,11 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
 
       await docRef.update({'photoUrl': photoUrl});
     } catch (e) {
-      debugPrint("Background photo upload failed (queued for sync): $e");
-      // 网络断开导致上传 Storage 失败。但没关系，精准的打卡时间已被 Firestore 接管
+      debugPrint("Background photo upload failed: $e");
     }
   }
 }
 
-// 🟢 核心修改：加上 .autoDispose
 final attendanceProvider = NotifierProvider.autoDispose<AttendanceNotifier, AttendanceState>(() {
   return AttendanceNotifier();
 });

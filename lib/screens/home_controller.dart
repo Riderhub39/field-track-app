@@ -1,3 +1,5 @@
+// home_controller.dart
+
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart'; 
@@ -21,23 +23,18 @@ class HomeState {
   final String staffName;
   final String? faceIdPhotoPath;
 
-  // --- 弹窗触发标志位 ---
   final bool shouldShowLogoutDialog;
   final String logoutReason;
   final bool shouldShowAnnouncement;
   final Map<String, dynamic>? announcementData;
   final bool shouldShowBiometricPrompt;
   
-  // 🟢 自动更新弹窗状态
   final bool shouldShowUpdatePrompt;
   final String? updateLatestVersion;
   final String? updateReleaseNotes;
   final String? updateApkUrl;
   final bool forceUpdate;
 
-  // 🟢 新增：PDPA定位授权弹窗状态
-  final bool shouldShowLocationConsentPrompt;
-  
   // --- 提示信息 ---
   final String? successMessage;
   final String? errorMessage;
@@ -56,8 +53,6 @@ class HomeState {
     this.updateReleaseNotes,
     this.updateApkUrl,
     this.forceUpdate = false,
-
-    this.shouldShowLocationConsentPrompt = false,
 
     this.successMessage,
     this.errorMessage,
@@ -78,8 +73,6 @@ class HomeState {
     String? updateApkUrl,
     bool? forceUpdate,
 
-    bool? shouldShowLocationConsentPrompt,
-
     String? successMessage,
     String? errorMessage,
     bool clearMessages = false,
@@ -99,8 +92,6 @@ class HomeState {
       updateApkUrl: updateApkUrl ?? this.updateApkUrl,
       forceUpdate: forceUpdate ?? this.forceUpdate,
 
-      shouldShowLocationConsentPrompt: shouldShowLocationConsentPrompt ?? this.shouldShowLocationConsentPrompt,
-
       successMessage: clearMessages ? null : (successMessage ?? this.successMessage),
       errorMessage: clearMessages ? null : (errorMessage ?? this.errorMessage),
     );
@@ -117,7 +108,6 @@ class HomeNotifier extends Notifier<HomeState> {
 
   @override
   HomeState build() {
-    debugPrint("🚀 [HomeNotifier] build() triggered");
     _initAll();
     
     ref.onDispose(() {
@@ -130,9 +120,8 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 
   void _initAll() async {
-    // 1. 静默检查更新与授权（不阻塞 UI）
+    // 1. 静默检查更新
     _checkForUpdates(); 
-    _checkLocationConsent(); 
     
     // 2. 启动实时监听
     _listenToUserStatus();
@@ -146,8 +135,7 @@ class HomeNotifier extends Notifier<HomeState> {
       _checkAndResumeTracking(user.uid);
     }
 
-    // 4. 延迟检查生物识别，避免刚进页面弹窗冲突
-    debugPrint("⏳ [HomeNotifier] Queuing Biometric Check in 1 second...");
+    // 4. 延迟检查生物识别
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
 
@@ -185,29 +173,6 @@ class HomeNotifier extends Notifier<HomeState> {
 
   void dismissUpdatePrompt() {
     state = state.copyWith(shouldShowUpdatePrompt: false);
-  }
-
-  // ==========================================
-  // 🟢 模块：PDPA 定位授权弹窗
-  // ==========================================
-  Future<void> _checkLocationConsent() async {
-    final prefs = await SharedPreferences.getInstance();
-    bool hasAgreed = prefs.getBool('has_agreed_location_tracking') ?? false;
-    
-    // 只有没同意过的才弹窗
-    if (!hasAgreed) {
-      state = state.copyWith(shouldShowLocationConsentPrompt: true);
-    }
-  }
-
-  Future<void> acceptLocationConsent() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('has_agreed_location_tracking', true);
-    state = state.copyWith(shouldShowLocationConsentPrompt: false);
-  }
-
-  void declineLocationConsent() {
-    state = state.copyWith(shouldShowLocationConsentPrompt: false);
   }
 
   // ==========================================
