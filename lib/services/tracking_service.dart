@@ -118,25 +118,34 @@ class TrackingNotifier extends Notifier<bool> {
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
       try {
         final userDocQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: userId).limit(1).get();
-        if (userDocQuery.docs.isEmpty || userDocQuery.docs.first.data()['isDriver'] != true) {
-          debugPrint("🚫 User is not a driver.");
+        
+        if (userDocQuery.docs.isEmpty) return;
+
+        // 🚀 核心修复：极致兼容布尔值 true、字符串 "true" 以及 role 等于 "driver" 的情况
+        final data = userDocQuery.docs.first.data();
+        bool isDriver = data['isDriver'] == true || 
+                        data['isDriver'] == 'true' || 
+                        data['role']?.toString().toLowerCase() == 'driver';
+
+        if (!isDriver) {
+          debugPrint("🚫 User is not a driver. Tracking aborted.");
           return;
         }
 
         _currentUserId = userId;
         state = true;
 
-        // 🟢 1. 存入 SharedPreferences，供后台 Isolate 读取
+        // 1. 存入 SharedPreferences，供后台 Isolate 读取
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('current_tracking_uid', userId);
 
-        // 🟢 2. 发送指令：启动无坚不摧的后台服务！
+        // 2. 发送指令：启动后台服务
         final service = FlutterBackgroundService();
         if (!(await service.isRunning())) {
           await service.startService();
         }
 
-        // 🟢 3. 启动前台的定时批量上传
+        // 3. 启动前台的定时批量上传
         _startBatchUploadTimer();
         _scheduleAutoStop(userId);
 
