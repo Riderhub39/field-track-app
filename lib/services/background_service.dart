@@ -9,7 +9,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../firebase_options.dart'; 
 import 'local_db_service.dart';
-import 'time_service.dart';
+
 
 // ==========================================
 // 1. 初始化服务 (在 main.dart 或 UI 中调用)
@@ -19,8 +19,8 @@ Future<void> initializeBackgroundService() async {
 
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
     'tracking_channel', 
-    'Live Tracking Service', 
-    description: 'This channel is used for live location tracking.', 
+    'Working Hours Location Tracking', // 🟢 明确是工作时间的追踪
+    description: 'This notifies you that your location is being shared with the admin in the background during working hours.', // 🟢 增加 PDPA 与后台说明
     importance: Importance.low, 
   );
 
@@ -33,8 +33,8 @@ Future<void> initializeBackgroundService() async {
       autoStart: false, 
       isForegroundMode: true,
       notificationChannelId: 'tracking_channel',
-      initialNotificationTitle: 'FieldTrack Active',
-      initialNotificationContent: 'Tracking your location...',
+      initialNotificationTitle: 'FieldTrack Pro',
+      initialNotificationContent: 'Initializing location service...',
       foregroundServiceNotificationId: 888,
     ),
     iosConfiguration: IosConfiguration(
@@ -53,37 +53,35 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 }
 
 // ==========================================
-// 2. 后台隔离区核心逻辑 (独立于 UI 运行)
+// 2. 核心后台逻辑 (独立 Isolate 运行)
 // ==========================================
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
-  // 1. 在后台 Isolate 重新初始化必要的组件
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-  
-  // 🟢 极度重要：因为 Isolate 内存不共享，后台服务必须自己同步一次 NTP 真实时间！
-  await TimeService.syncTime();
+  // 1. 初始化 Firebase
+  try {
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  } catch (e) {
+    debugPrint("Firebase already initialized or error: $e");
+  }
 
+  // 2. 获取当前追踪的 userId
   final prefs = await SharedPreferences.getInstance();
-  
-  // 监听停止命令
-  service.on('stopService').listen((event) {
-    service.stopSelf();
-  });
-
-  // 获取当前追踪的员工 ID
-  final String? userId = prefs.getString('current_tracking_uid');
+  String? userId = prefs.getString('current_tracking_uid');
   if (userId == null) {
     service.stopSelf();
     return;
   }
 
-  // 2. 配置高精度流 (后台专用)
-  final locationSettings = AndroidSettings(
+  // 监听前台发来的停止指令
+  service.on('stopService').listen((event) {
+    service.stopSelf();
+  });
+
+  const LocationSettings locationSettings = LocationSettings(
     accuracy: LocationAccuracy.high,
-    distanceFilter: 20,
-    forceLocationManager: true,
+    distanceFilter: 10, 
   );
 
   Position? lastLocalSavedPosition;
@@ -114,20 +112,20 @@ void onStart(ServiceInstance service) async {
         'lng': position.longitude,
         'speed': position.speed,
         'heading': position.heading,
-        'lastUpdate': ServerValue.timestamp, // ServerValue 永远是安全的，不受手机时间影响
+        'lastUpdate': ServerValue.timestamp, 
       });
       
       debugPrint("✅ [Background] Location updated & cached.");
 
-      // 更新前台通知内容 (Android)
+      // 🟢 更新前台通知内容 (Android 合规要求)
       if (service is AndroidServiceInstance) {
         service.setForegroundNotificationInfo(
-          title: "FieldTrack is Active",
-          content: "Speed: ${(position.speed * 3.6).toStringAsFixed(1)} km/h",
+          title: "FieldTrack Pro - Active",
+          content: "Your location is being updated in the background.", // 明确告知用户后台正在定位
         );
       }
     } catch (e) {
-      debugPrint("❌ [Background] Error processing location: $e");
+      debugPrint("❌ Background Location Error: $e");
     }
   });
 }

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/material.dart'; // 🟢 添加了 material.dart 用于 debugPrint
+import 'package:flutter/material.dart'; 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,7 +8,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:package_info_plus/package_info_plus.dart'; // 🟢 确保引入
+import 'package:package_info_plus/package_info_plus.dart'; 
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart';
@@ -21,7 +21,7 @@ class HomeState {
   final String staffName;
   final String? faceIdPhotoPath;
 
-  // 弹窗触发标志位
+  // --- 弹窗触发标志位 ---
   final bool shouldShowLogoutDialog;
   final String logoutReason;
   final bool shouldShowAnnouncement;
@@ -34,8 +34,11 @@ class HomeState {
   final String? updateReleaseNotes;
   final String? updateApkUrl;
   final bool forceUpdate;
+
+  // 🟢 新增：PDPA定位授权弹窗状态
+  final bool shouldShowLocationConsentPrompt;
   
-  // 提示信息
+  // --- 提示信息 ---
   final String? successMessage;
   final String? errorMessage;
 
@@ -47,13 +50,17 @@ class HomeState {
     this.shouldShowAnnouncement = false,
     this.announcementData,
     this.shouldShowBiometricPrompt = false,
-    this.successMessage,
-    this.errorMessage,
+    
     this.shouldShowUpdatePrompt = false,
     this.updateLatestVersion,
     this.updateReleaseNotes,
     this.updateApkUrl,
     this.forceUpdate = false,
+
+    this.shouldShowLocationConsentPrompt = false,
+
+    this.successMessage,
+    this.errorMessage,
   });
 
   HomeState copyWith({
@@ -64,14 +71,18 @@ class HomeState {
     bool? shouldShowAnnouncement,
     Map<String, dynamic>? announcementData,
     bool? shouldShowBiometricPrompt,
-    String? successMessage,
-    String? errorMessage,
-    bool clearMessages = false,
+    
     bool? shouldShowUpdatePrompt,
     String? updateLatestVersion,
     String? updateReleaseNotes,
     String? updateApkUrl,
     bool? forceUpdate,
+
+    bool? shouldShowLocationConsentPrompt,
+
+    String? successMessage,
+    String? errorMessage,
+    bool clearMessages = false,
   }) {
     return HomeState(
       staffName: staffName ?? this.staffName,
@@ -81,13 +92,17 @@ class HomeState {
       shouldShowAnnouncement: shouldShowAnnouncement ?? this.shouldShowAnnouncement,
       announcementData: announcementData ?? this.announcementData,
       shouldShowBiometricPrompt: shouldShowBiometricPrompt ?? this.shouldShowBiometricPrompt,
-      successMessage: clearMessages ? null : (successMessage ?? this.successMessage),
-      errorMessage: clearMessages ? null : (errorMessage ?? this.errorMessage),
+      
       shouldShowUpdatePrompt: shouldShowUpdatePrompt ?? this.shouldShowUpdatePrompt,
       updateLatestVersion: updateLatestVersion ?? this.updateLatestVersion,
       updateReleaseNotes: updateReleaseNotes ?? this.updateReleaseNotes,
       updateApkUrl: updateApkUrl ?? this.updateApkUrl,
       forceUpdate: forceUpdate ?? this.forceUpdate,
+
+      shouldShowLocationConsentPrompt: shouldShowLocationConsentPrompt ?? this.shouldShowLocationConsentPrompt,
+
+      successMessage: clearMessages ? null : (successMessage ?? this.successMessage),
+      errorMessage: clearMessages ? null : (errorMessage ?? this.errorMessage),
     );
   }
 }
@@ -114,24 +129,31 @@ class HomeNotifier extends Notifier<HomeState> {
     return HomeState();
   }
 
-  void _initAll() {
-    _checkForUpdates(); // 🟢 1. 第一时间在后台静默检查是否有新版本
+  void _initAll() async {
+    // 1. 静默检查更新与授权（不阻塞 UI）
+    _checkForUpdates(); 
+    _checkLocationConsent(); 
+    
+    // 2. 启动实时监听
     _listenToUserStatus();
     _startDeviceMonitoring();
     _listenForAnnouncements();
 
+    // 3. 恢复用户状态与后台服务
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       NotificationService().startListeningToUserUpdates(user.uid);
       _checkAndResumeTracking(user.uid);
     }
 
-    // 这里原先设定了 1 秒延迟
+    // 4. 延迟检查生物识别，避免刚进页面弹窗冲突
     debugPrint("⏳ [HomeNotifier] Queuing Biometric Check in 1 second...");
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
 
-  // 🚀 新增：静默检查更新逻辑
+  // ==========================================
+  // 🟢 模块：版本更新检查
+  // ==========================================
   Future<void> _checkForUpdates() async {
     try {
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
@@ -144,10 +166,9 @@ class HomeNotifier extends Notifier<HomeState> {
         String latestVersion = data['latest_version'] ?? currentVersion;
         String apkUrl = data['apk_url'] ?? "";
         String releaseNotes = data['release_notes'] ?? "New version is available.";
-        bool isForce = data['force_update'] ?? false; // 数据库可以控制是否强更
+        bool isForce = data['force_update'] ?? false;
 
         if (currentVersion != latestVersion && apkUrl.isNotEmpty) {
-          // 发现新版本，触发状态更新通知 UI 弹窗
           state = state.copyWith(
             shouldShowUpdatePrompt: true,
             updateLatestVersion: latestVersion,
@@ -162,16 +183,36 @@ class HomeNotifier extends Notifier<HomeState> {
     }
   }
 
-  // 🚀 新增：用于用户点击稍后更新时关闭弹窗
   void dismissUpdatePrompt() {
     state = state.copyWith(shouldShowUpdatePrompt: false);
   }
 
-  void clearMessages() {
-    state = state.copyWith(clearMessages: true);
+  // ==========================================
+  // 🟢 模块：PDPA 定位授权弹窗
+  // ==========================================
+  Future<void> _checkLocationConsent() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool hasAgreed = prefs.getBool('has_agreed_location_tracking') ?? false;
+    
+    // 只有没同意过的才弹窗
+    if (!hasAgreed) {
+      state = state.copyWith(shouldShowLocationConsentPrompt: true);
+    }
   }
 
-  // --- 后台监听服务 ---
+  Future<void> acceptLocationConsent() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('has_agreed_location_tracking', true);
+    state = state.copyWith(shouldShowLocationConsentPrompt: false);
+  }
+
+  void declineLocationConsent() {
+    state = state.copyWith(shouldShowLocationConsentPrompt: false);
+  }
+
+  // ==========================================
+  // 模块：账号状态与设备踢出监听
+  // ==========================================
   void _startDeviceMonitoring() {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
@@ -251,6 +292,9 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowLogoutDialog: false);
   }
 
+  // ==========================================
+  // 模块：全局公告监听
+  // ==========================================
   void _listenForAnnouncements() {
     _announcementSubscription = FirebaseFirestore.instance
         .collection('announcements')
@@ -289,36 +333,23 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowAnnouncement: false);
   }
 
-  // 🔴 重点调试区域
+  // ==========================================
+  // 模块：生物识别检查
+  // ==========================================
   Future<void> _checkBiometricSetup() async {
-    debugPrint("🔍 [Biometric Debug] _checkBiometricSetup started. Waiting 800ms...");
-    await Future.delayed(const Duration(milliseconds: 800));
-
     final prefs = await SharedPreferences.getInstance();
     bool hasAsked = prefs.getBool('has_asked_biometrics') ?? false;
     bool isEnabled = prefs.getBool('biometric_enabled') ?? false;
 
-    debugPrint("🔍 [Biometric Debug] Cache values -> hasAsked: $hasAsked | isEnabled: $isEnabled");
+    if (hasAsked || isEnabled) return;
 
-    if (hasAsked || isEnabled) {
-      debugPrint("🛑 [Biometric Debug] Exiting: Already asked or enabled.");
-      return;
-    }
-
-    debugPrint("🔍 [Biometric Debug] Checking hardware support...");
     try {
       bool isHardwareSupported = await BiometricService().isDeviceSupported();
-      debugPrint("🔍 [Biometric Debug] isDeviceSupported returned: $isHardwareSupported");
+      if (!isHardwareSupported) return;
 
-      if (!isHardwareSupported) {
-        debugPrint("🛑 [Biometric Debug] Exiting: Hardware not supported OR no fingerprint enrolled on Emulator.");
-        return;
-      }
-
-      debugPrint("✅ [Biometric Debug] Conditions met. Updating state to show prompt!");
       state = state.copyWith(shouldShowBiometricPrompt: true);
     } catch (e) {
-      debugPrint("❌ [Biometric Debug] Exception caught during biometric check: $e");
+      debugPrint("❌ [Biometric Debug] Exception caught: $e");
     }
   }
 
@@ -340,6 +371,9 @@ class HomeNotifier extends Notifier<HomeState> {
     }
   }
 
+  // ==========================================
+  // 模块：辅助与清理函数
+  // ==========================================
   void _checkAndResumeTracking(String uid) {
     ref.read(trackingProvider.notifier).resumeTrackingSession(uid);
   }
@@ -349,7 +383,13 @@ class HomeNotifier extends Notifier<HomeState> {
     await prefs.setString('cached_staff_name', name);
   }
 
-  // --- 更新头像 ---
+  void clearMessages() {
+    state = state.copyWith(clearMessages: true);
+  }
+
+  // ==========================================
+  // 模块：头像上传
+  // ==========================================
   Future<void> uploadProfilePhoto(XFile photo) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;

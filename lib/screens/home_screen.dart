@@ -23,13 +23,12 @@ class HomeScreen extends ConsumerWidget {
   // ========== UI Action Helpers ==========
 
   // 🟢 自动弹出的更新提示框
- // 🟢 自动弹出的更新提示框
   void _showAutoUpdateDialog(BuildContext context, WidgetRef ref, String latestVersion, String releaseNotes, String apkUrl, bool forceUpdate) {
     showDialog(
       context: context,
       barrierDismissible: false, // 强制用户必须做出选择，不能点击背景关闭
-      builder: (ctx) => PopScope( // 🟢 修复 1：使用 PopScope 替代 WillPopScope
-        canPop: !forceUpdate,     // 🟢 只有非强制更新时才允许返回键关闭
+      builder: (ctx) => PopScope(
+        canPop: !forceUpdate,    // 只有非强制更新时才允许返回键关闭
         child: AlertDialog(
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
           title: Row(
@@ -63,16 +62,22 @@ class HomeScreen extends ConsumerWidget {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
               onPressed: () async {
-                // 点击更新，使用外部浏览器打开链接开始下载
-                final Uri url = Uri.parse(apkUrl);
-                if (await canLaunchUrl(url)) {
-                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                // 🟢 优化: 增加 try-catch 防止无浏览器设备导致崩溃
+                try {
+                  final Uri url = Uri.parse(apkUrl);
+                  if (await canLaunchUrl(url)) {
+                    await launchUrl(url, mode: LaunchMode.externalApplication);
+                  } else {
+                    debugPrint("Could not launch $apkUrl");
+                  }
+                } catch (e) {
+                  debugPrint("Error launching URL: $e");
                 }
                 
-                // 🟢 修复 2：在跨越 async 间隙后，使用 ctx 前必须检查 mounted
+                // 跨越 async 间隙后，使用 ctx 前必须检查 mounted
                 if (!ctx.mounted) return;
 
-                // 只有非强更时才允许关闭弹窗
+                // 只有非强更时才允许关闭弹窗 (强更时保留弹窗，防止用户切回App继续使用)
                 if (!forceUpdate) {
                   Navigator.pop(ctx);
                   ref.read(homeProvider.notifier).dismissUpdatePrompt();
@@ -109,7 +114,10 @@ class HomeScreen extends ConsumerWidget {
         ),
         actions: [
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red, 
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))
+            ),
             onPressed: () {
               Navigator.of(ctx).pop();
               ref.read(homeProvider.notifier).resetLogoutDialog();
@@ -159,17 +167,22 @@ class HomeScreen extends ConsumerWidget {
                 const SizedBox(height: 5),
                 InkWell(
                   onTap: () async {
-                    final Uri url = Uri.parse(attachmentUrl);
-                    if (await canLaunchUrl(url)) {
-                      await launchUrl(url, mode: LaunchMode.externalApplication);
+                    // 🟢 优化: 增加 try-catch 保护
+                    try {
+                      final Uri url = Uri.parse(attachmentUrl);
+                      if (await canLaunchUrl(url)) {
+                        await launchUrl(url, mode: LaunchMode.externalApplication);
+                      }
+                    } catch (e) {
+                      debugPrint("Error opening attachment: $e");
                     }
                   },
                   child: Container(
                     padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
                     decoration: BoxDecoration(
-                      color: Colors.blue.withValues(alpha:0.1),
+                      color: Colors.blue.withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue.withValues(alpha:0.3))
+                      border: Border.all(color: Colors.blue.withValues(alpha: 0.3))
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -231,13 +244,22 @@ class HomeScreen extends ConsumerWidget {
       MaterialPageRoute(builder: (context) => const CustomProfileCamera()),
     );
 
-    // 🟢 核心修复：在 await 之后使用 context 前，必须检查 context.mounted
     if (!context.mounted) return;
 
     if (photo != null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('home.msg_uploading'.tr())));
       ref.read(homeProvider.notifier).uploadProfilePhoto(photo);
     }
+  }
+
+  // 🟢 提取的图像获取方法，使 build 更干净
+  ImageProvider? _getProfileImage(String? path) {
+    if (path == null || path.isEmpty) return null;
+    if (path.startsWith('http')) return NetworkImage(path);
+    
+    final file = File(path);
+    if (file.existsSync()) return FileImage(file);
+    return null;
   }
 
   // ========== Widget Build ==========
@@ -248,34 +270,26 @@ class HomeScreen extends ConsumerWidget {
 
     // 🟢 统一的弹窗/Toast 事件监听中心
     ref.listen<HomeState>(homeProvider, (previous, next) {
-      // 🚀 新增：监听自动版本更新
+      // 版本更新
       if (next.shouldShowUpdatePrompt && !(previous?.shouldShowUpdatePrompt ?? false)) {
         _showAutoUpdateDialog(
-          context, 
-          ref,
-          next.updateLatestVersion ?? '', 
-          next.updateReleaseNotes ?? '', 
-          next.updateApkUrl ?? '', 
-          next.forceUpdate
+          context, ref, next.updateLatestVersion ?? '', 
+          next.updateReleaseNotes ?? '', next.updateApkUrl ?? '', next.forceUpdate
         );
       }
-
-      // 被踢下线或账号禁用
+      // 踢下线或禁用
       if (next.shouldShowLogoutDialog && !(previous?.shouldShowLogoutDialog ?? false)) {
         _showLogoutDialog(context, next.logoutReason, ref);
       }
-      
-      // 显示新公告
+      // 系统公告
       if (next.shouldShowAnnouncement && !(previous?.shouldShowAnnouncement ?? false)) {
          _showAnnouncementDialog(context, next.announcementData!, ref);
       }
-
-      // 询问是否开启指纹
+      // 生物识别
       if (next.shouldShowBiometricPrompt && !(previous?.shouldShowBiometricPrompt ?? false)) {
         _showBiometricDialog(context, ref);
       }
-
-      // 常规错误或成功提示
+      // 提示信息
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!.tr()), backgroundColor: Colors.red));
         ref.read(homeProvider.notifier).clearMessages();
@@ -286,18 +300,7 @@ class HomeScreen extends ConsumerWidget {
       }
     });
 
-    // 解析头像
-    ImageProvider? profileImage;
-    if (state.faceIdPhotoPath != null && state.faceIdPhotoPath!.isNotEmpty) {
-      if (state.faceIdPhotoPath!.startsWith('http')) {
-        profileImage = NetworkImage(state.faceIdPhotoPath!);
-      } else {
-        final file = File(state.faceIdPhotoPath!);
-        if (file.existsSync()) {
-          profileImage = FileImage(file);
-        }
-      }
-    }
+    final profileImage = _getProfileImage(state.faceIdPhotoPath);
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -305,7 +308,8 @@ class HomeScreen extends ConsumerWidget {
         title: Text('home.app_title'.tr()),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
-        elevation: 0,
+        elevation: 0, // 去除阴影，让 AppBar 和下方的 Header 完美融合
+        scrolledUnderElevation: 0, 
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 8.0),
@@ -317,7 +321,7 @@ class HomeScreen extends ConsumerWidget {
                   shape: BoxShape.circle,
                   border: Border.all(color: Colors.white, width: 2),
                   boxShadow: [
-                    BoxShadow(color: Colors.black.withValues(alpha:0.1), blurRadius: 4)
+                    BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 4)
                   ]
                 ),
                 child: CircleAvatar(
@@ -354,18 +358,13 @@ class HomeScreen extends ConsumerWidget {
                 bottomRight: Radius.circular(30),
               ),
             ),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(width: 15),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('home.welcome'.tr(), style: const TextStyle(color: Colors.white70)),
-                    Text(
-                      state.staffName,
-                      style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)
-                    ),
-                  ],
+                Text('home.welcome'.tr(), style: const TextStyle(color: Colors.white70)),
+                Text(
+                  state.staffName,
+                  style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)
                 ),
               ],
             ),
@@ -383,56 +382,42 @@ class HomeScreen extends ConsumerWidget {
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
               crossAxisSpacing: 20,
               mainAxisSpacing: 20,
+              childAspectRatio: 1.1, // 🟢 优化：加入比例，防止小屏幕文字溢出
               children: [
                 _buildMenuCard(
                   context,
                   'home.att_center'.tr(),
                   Icons.access_time_filled,
                   Colors.orange,
-                  isEnabled: true,
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const AttendanceScreen()));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AttendanceScreen())),
                 ),
                 _buildMenuCard(
                   context,
                   'home.apply_leave'.tr(),
                   Icons.calendar_month_outlined,
                   Colors.green,
-                  isEnabled: true,
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const LeaveApplicationScreen()));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaveApplicationScreen())),
                 ),
                 _buildMenuCard(
                   context,
                   'home.smart_cam'.tr(),
                   Icons.camera_alt_outlined,
                   Colors.blue,
-                  isEnabled: true,
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const CameraScreen()));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CameraScreen())),
                 ),
                 _buildMenuCard(
                   context,
                   'home.payslip'.tr(),
                   Icons.receipt_long,
                   Colors.pink,
-                  isEnabled: true,
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const PayslipScreen()));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayslipScreen())),
                 ),
                 _buildMenuCard(
                   context,
                   'home.profile'.tr(),
                   Icons.person,
                   Colors.purple,
-                  isEnabled: true,
-                  onTap: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (context) => const ProfileScreen()));
-                  },
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen())),
                 ),
               ],
             ),
@@ -442,6 +427,7 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
+  // 🟢 抽取方法构建 Menu 模块，保持代码整洁
   Widget _buildMenuCard(BuildContext context, String title, IconData icon, Color color, {required VoidCallback onTap, bool isEnabled = true}) {
     return InkWell(
       onTap: isEnabled ? onTap : () {
@@ -460,7 +446,7 @@ class HomeScreen extends ConsumerWidget {
           borderRadius: BorderRadius.circular(20),
           boxShadow: isEnabled ? [
             BoxShadow(
-              color: Colors.grey.withValues(alpha:0.1),
+              color: Colors.grey.withValues(alpha: 0.1),
               blurRadius: 10,
               spreadRadius: 2,
               offset: const Offset(0, 5),
@@ -475,7 +461,7 @@ class HomeScreen extends ConsumerWidget {
                 Container(
                   padding: const EdgeInsets.all(15),
                   decoration: BoxDecoration(
-                    color: isEnabled ? color.withValues(alpha:0.1) : Colors.grey.withValues(alpha:0.3),
+                    color: isEnabled ? color.withValues(alpha: 0.1) : Colors.grey.withValues(alpha: 0.3),
                     shape: BoxShape.circle
                   ),
                   child: Icon(icon, color: isEnabled ? color : Colors.grey, size: 35),
@@ -484,6 +470,7 @@ class HomeScreen extends ConsumerWidget {
                 Center(
                   child: Text(
                     title,
+                    textAlign: TextAlign.center,
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 15,
