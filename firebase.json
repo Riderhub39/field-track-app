@@ -1,0 +1,39 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "fieldtrack-pro-a16b4",
+          "appId": "1:73078824026:android:23f76532b90e910155cc63",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "fieldtrack-pro-a16b4",
+          "configurations": {
+            "android": "1:73078824026:android:23f76532b90e910155cc63",
+            "ios": "1:73078824026:ios:9078fdee95aa347a55cc63",
+            "macos": "1:73078824026:ios:9078fdee95aa347a55cc63",
+            "web": "1:73078824026:web:1215f9a74fc7cd4d55cc63",
+            "windows": "1:73078824026:web:2582865b776daf2a55cc63"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
+}

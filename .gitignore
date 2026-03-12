@@ -1,0 +1,42 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.history
+.svn/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code related
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Android specific (🚀 核心更新)
+.gradle/
+/android/app/build/
+/android/build/
+/android/local.properties
+/android/key.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+
+# Symbolication/Obfuscation related
+app.*.symbols
+app.*.map.json
