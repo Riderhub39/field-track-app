@@ -517,6 +517,7 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
             'speed': 0.0, 
             'heading': 0.0,
             'lastUpdate': ServerValue.timestamp, 
+            'isTracking': true,
           });
         } catch (e) {
           debugPrint("❌ Init Location Upload Failed: $e");

@@ -152,6 +152,7 @@ void onStart(ServiceInstance service) async {
         'speed': position.speed,
         'heading': position.heading,
         'lastUpdate': ServerValue.timestamp, 
+        'isTracking': true,
       });
       
       if (service is AndroidServiceInstance) {

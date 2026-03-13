@@ -172,6 +172,16 @@ class TrackingNotifier extends Notifier<bool> {
   Future<void> stopTracking() async {
     _autoStopTimer?.cancel();
     
+    if (_currentUserId != null) {
+      try {
+        await FirebaseDatabase.instance.ref("live_locations/$_currentUserId").update({
+          'isTracking': false,
+        });
+      } catch (e) {
+        debugPrint("❌ RTDB Status Update Failed: $e");
+      }
+    }
+
     final service = FlutterBackgroundService();
     service.invoke('stopService');
 
