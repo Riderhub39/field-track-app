@@ -97,9 +97,8 @@ void onStart(ServiceInstance service) async {
     }
   });
 
-  // 2. 后台 3 分钟批量上传 & 超时自杀定时器
-  Timer.periodic(const Duration(minutes: 3), (timer) async {
-    // 🚀 修复点 1：去掉了 shiftEndTime 后面的 !
+  // 2. 后台 15 分钟批量上传 & 超时自杀定时器 (🚀 已修改为 15 分钟)
+  Timer.periodic(const Duration(minutes: 15), (timer) async {
     if (shiftEndTime != null && DateTime.now().isAfter(shiftEndTime)) {
       debugPrint("🛑 [Background] Shift time is over! Self-terminating from timer...");
       await _performBackgroundBatchUpload(userId);
@@ -121,12 +120,11 @@ void onStart(ServiceInstance service) async {
   );
 
   Position? lastLocalSavedPosition;
-  const double localDistanceFilter = 10.0; 
+  const double localDistanceFilter = 150.0; // 🚀 已修改为 150 米
 
   // 3. 启动不间断的位置监听
   Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
     
-    // 🚀 修复点 2：去掉了 shiftEndTime 后面的 !
     if (shiftEndTime != null && DateTime.now().isAfter(shiftEndTime)) {
       debugPrint("🛑 [Background] Shift time is over! Self-terminating from GPS stream...");
       await _performBackgroundBatchUpload(userId);
