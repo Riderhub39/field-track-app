@@ -6,21 +6,19 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'package:cloud_firestore/cloud_firestore.dart'; 
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart'; 
 import '../firebase_options.dart'; 
 import 'local_db_service.dart';
 
-
-// ==========================================
-// 1. 初始化服务 (在 main.dart 或 UI 中调用)
-// ==========================================
 Future<void> initializeBackgroundService() async {
   final service = FlutterBackgroundService();
 
   const AndroidNotificationChannel channel = AndroidNotificationChannel(
     'tracking_channel', 
-    'Working Hours Location Tracking', // 🟢 明确是工作时间的追踪
-    description: 'This notifies you that your location is being shared with the admin in the background during working hours.', // 🟢 增加 PDPA 与后台说明
+    'Working Hours Location Tracking', 
+    description: 'This notifies you that your location is being shared with the admin in the background during working hours.', 
     importance: Importance.low, 
   );
 
@@ -52,30 +50,68 @@ Future<bool> onIosBackground(ServiceInstance service) async {
   return true;
 }
 
-// ==========================================
-// 2. 核心后台逻辑 (独立 Isolate 运行)
-// ==========================================
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
   DartPluginRegistrant.ensureInitialized();
 
-  // 1. 初始化 Firebase
   try {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   } catch (e) {
     debugPrint("Firebase already initialized or error: $e");
   }
 
-  // 2. 获取当前追踪的 userId
   final prefs = await SharedPreferences.getInstance();
   String? userId = prefs.getString('current_tracking_uid');
+  String? shiftEndTimeStr = prefs.getString('shift_end_time'); 
+  
   if (userId == null) {
     service.stopSelf();
     return;
   }
 
-  // 监听前台发来的停止指令
-  service.on('stopService').listen((event) {
+  DateTime? shiftEndTime;
+  if (shiftEndTimeStr != null) {
+    shiftEndTime = DateTime.tryParse(shiftEndTimeStr);
+  }
+
+  // 1. Firebase 状态实时监听拦截 (Admin 操作拦截)
+  final todayStr = DateFormat('yyyy-MM-dd').format(DateTime.now());
+  FirebaseFirestore.instance
+      .collection('attendance')
+      .where('uid', isEqualTo: userId)
+      .where('date', isEqualTo: todayStr)
+      .snapshots()
+      .listen((snapshot) async {
+    if (snapshot.docs.isNotEmpty) {
+      final docs = snapshot.docs.toList();
+      docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
+      
+      final lastSession = docs.last.data()['session'];
+      final status = docs.last.data()['verificationStatus'];
+
+      if ((lastSession == 'Clock Out' || lastSession == 'Break Out') && status != 'Rejected') {
+        debugPrint("🛑 [Background] Detected Admin/User Clock/Break Out! Self-terminating...");
+        await _performBackgroundBatchUpload(userId);
+        service.stopSelf(); 
+      }
+    }
+  });
+
+  // 2. 后台 3 分钟批量上传 & 超时自杀定时器
+  Timer.periodic(const Duration(minutes: 3), (timer) async {
+    // 🚀 修复点 1：去掉了 shiftEndTime 后面的 !
+    if (shiftEndTime != null && DateTime.now().isAfter(shiftEndTime)) {
+      debugPrint("🛑 [Background] Shift time is over! Self-terminating from timer...");
+      await _performBackgroundBatchUpload(userId);
+      service.stopSelf();
+      timer.cancel();
+      return;
+    }
+    await _performBackgroundBatchUpload(userId);
+  });
+
+  service.on('stopService').listen((event) async {
+    await _performBackgroundBatchUpload(userId);
     service.stopSelf();
   });
 
@@ -85,12 +121,19 @@ void onStart(ServiceInstance service) async {
   );
 
   Position? lastLocalSavedPosition;
-  const double localDistanceFilter = 50.0; 
+  const double localDistanceFilter = 10.0; 
 
   // 3. 启动不间断的位置监听
   Geolocator.getPositionStream(locationSettings: locationSettings).listen((Position position) async {
     
-    // 过滤距离 (50米)
+    // 🚀 修复点 2：去掉了 shiftEndTime 后面的 !
+    if (shiftEndTime != null && DateTime.now().isAfter(shiftEndTime)) {
+      debugPrint("🛑 [Background] Shift time is over! Self-terminating from GPS stream...");
+      await _performBackgroundBatchUpload(userId);
+      service.stopSelf();
+      return;
+    }
+
     if (lastLocalSavedPosition != null) {
       double distance = Geolocator.distanceBetween(
         lastLocalSavedPosition!.latitude, lastLocalSavedPosition!.longitude,
@@ -102,10 +145,8 @@ void onStart(ServiceInstance service) async {
     lastLocalSavedPosition = position;
 
     try {
-      // 🟢 A: 存入本地 SQLite
       await LocalDbService().insertLocation(position.latitude, position.longitude);
 
-      // 🟢 B: 同步至 RTDB (实时地图)
       FirebaseDatabase.instance.ref("live_locations/$userId").update({
         'uid': userId,
         'lat': position.latitude,
@@ -115,17 +156,46 @@ void onStart(ServiceInstance service) async {
         'lastUpdate': ServerValue.timestamp, 
       });
       
-      debugPrint("✅ [Background] Location updated & cached.");
-
-      // 🟢 更新前台通知内容 (Android 合规要求)
       if (service is AndroidServiceInstance) {
         service.setForegroundNotificationInfo(
           title: "FieldTrack Pro - Active",
-          content: "Your location is being updated in the background.", // 明确告知用户后台正在定位
+          content: "Your location is being updated in the background.", 
         );
       }
     } catch (e) {
       debugPrint("❌ Background Location Error: $e");
     }
   });
+}
+
+// 批量上传逻辑保持不变
+Future<void> _performBackgroundBatchUpload(String userId) async {
+  final List<Map<String, dynamic>> localPoints = await LocalDbService().getUnuploadedLocations();
+  if (localPoints.isEmpty) return;
+
+  debugPrint("📦 [Background] Batch Uploading ${localPoints.length} points to Firestore...");
+
+  final now = DateTime.now();
+  final todayStr = DateFormat('yyyy-MM-dd').format(now);
+  final String batchDocId = "${userId}_${now.millisecondsSinceEpoch}";
+
+  try {
+    await FirebaseFirestore.instance.collection('tracking_batches').doc(batchDocId).set({
+      'uid': userId,
+      'date': todayStr,
+      'uploadedAt': FieldValue.serverTimestamp(),
+      'points': localPoints.map((p) => {
+        'lat': p['latitude'],
+        'lng': p['longitude'],
+        'ts': p['timestamp'], 
+      }).toList(),
+    });
+
+    final List<int> ids = localPoints.map((p) => p['id'] as int).toList();
+    await LocalDbService().clearUploaded(ids);
+    
+    debugPrint("✅ [Background] Batch Upload Success");
+  } catch (e) {
+    debugPrint("❌ [Background] Batch Upload Failed: $e");
+  }
 }

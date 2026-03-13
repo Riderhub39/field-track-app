@@ -13,7 +13,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:network_info_plus/network_info_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // 🟢 引入插件
+import 'package:shared_preferences/shared_preferences.dart'; 
 import '../services/time_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../services/tracking_service.dart';
@@ -44,7 +44,7 @@ class AttendanceState {
   final String selectedAction;
 
   // 🟢 PDPA 相关
-  final bool shouldShowLocationConsent; // 是否显示 PDPA 询问
+  final bool shouldShowLocationConsent; 
 
   // 今日打卡缓存
   final String todayInTime;
@@ -72,7 +72,7 @@ class AttendanceState {
     this.isProcessingAction = false,
     this.capturedPhoto,
     this.selectedAction = "Clock In",
-    this.shouldShowLocationConsent = false, // 默认不显示
+    this.shouldShowLocationConsent = false, 
     this.todayInTime = "--:--",
     this.todayOutTime = "--:--",
     this.lastSession,
@@ -155,7 +155,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
   }
 
   Future<void> _initAll() async {
-    // 🟢 1. 优先检查 PDPA 状态
     await _checkPDPAConsent();
 
     final user = FirebaseAuth.instance.currentUser;
@@ -166,16 +165,13 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     }
     _fetchOfficeSettings(); 
     
-    // 🟢 2. 只有在不需要显示弹窗（即已 Ignore）时，才自动执行定位
     if (!state.shouldShowLocationConsent) {
       await _initLocation();
     }
   }
 
-  // 🟢 核心逻辑：检查是否需要显示 PDPA 询问
   Future<void> _checkPDPAConsent() async {
     final prefs = await SharedPreferences.getInstance();
-    // 检查是否永久忽略了该提醒
     bool hasIgnored = prefs.getBool('has_ignored_pdpa_permanently') ?? false;
     
     if (!hasIgnored) {
@@ -183,7 +179,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     }
   }
 
-  // 🟢 核心逻辑：完成 PDPA 授权流程
   Future<void> completePDPAConsent({required bool permanently}) async {
     if (permanently) {
       final prefs = await SharedPreferences.getInstance();
@@ -191,8 +186,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     }
     
     state = state.copyWith(shouldShowLocationConsent: false);
-    
-    // 用户操作后，无论点击哪个，立刻开始初始化位置（本次会话允许使用位置）
     await _initLocation();
   }
 
@@ -281,12 +274,15 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       DateTime? lastPunch;
 
       final docs = snapshot.docs;
+      // 🟢 严格按照 Timestamp 排序，保证拿到的是绝对最新的状态
       docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
 
       if (docs.isNotEmpty) {
         final lastData = docs.last.data();
-        lastSess = lastData['session'];
+        lastSess = lastData['session']; // 这就是 timestamp 最近的一次操作
         lastPunch = (lastData['timestamp'] as Timestamp).toDate();
+        
+        // 🟢 UI 锁定标识：只要今天有过 Clock Out 就锁死界面
         clockedOut = docs.any((doc) => doc.data()['session'] == 'Clock Out');
 
         for (var doc in docs) {
@@ -295,6 +291,16 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
           final formatted = DateFormat('HH:mm').format(ts);
           if (data['session'] == 'Clock In') inT = formatted;
           if (data['session'] == 'Clock Out') outT = formatted;
+        }
+      }
+
+      // 🚀 核心拦截逻辑：停止定位只看“最近一次状态 (lastSess)”
+      // 如果最新操作是下班 或 休息（无论是员工自己点还是Admin点），立刻停止定位
+      if (lastSess == 'Clock Out' || lastSess == 'Break Out') {
+        try {
+          ref.read(trackingProvider.notifier).stopTracking();
+        } catch (e) {
+          debugPrint("❌ Force stop tracking error: $e");
         }
       }
 

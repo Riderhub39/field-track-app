@@ -136,7 +136,16 @@ class AttendanceScreen extends ConsumerWidget {
           children: [
             const Icon(Icons.privacy_tip_outlined, color: Color(0xFF15438c), size: 28),
             const SizedBox(width: 10),
-            Text("att.pdpa_title".tr(), style: const TextStyle(fontWeight: FontWeight.bold)),
+            // 🚀 核心修复：使用 Expanded 限制宽度并允许自动换行
+            Expanded(
+              child: Text(
+                "att.pdpa_title".tr(), 
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold, 
+                  fontSize: 18, // 稍微调小字号，避免视觉冲击力过大
+                ),
+              ),
+            ),
           ],
         ),
         content: Text(
@@ -152,7 +161,7 @@ class AttendanceScreen extends ConsumerWidget {
             },
             child: Text("att.btn_ignore".tr(), style: const TextStyle(color: Colors.grey)),
           ),
-          // 🟢 Consent 按钮：仅同意本次，下次进入若未设置永久忽略仍会提醒
+          // 🟢 Consent 按钮：仅同意本次
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF15438c),
