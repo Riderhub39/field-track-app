@@ -8,7 +8,7 @@ import 'package:easy_localization/easy_localization.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../widgets/custom_profile_camera.dart';
-import 'camera_screen.dart';
+import 'case_setup_screen.dart';
 import 'attendance_screen.dart';
 import 'settings_screen.dart';
 import 'profile_screen.dart';
@@ -325,7 +325,8 @@ class HomeScreen extends ConsumerWidget {
               children: [
                 _buildMenuCard(context, 'home.att_center'.tr(), Icons.access_time_filled, Colors.orange, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AttendanceScreen()))),
                 _buildMenuCard(context, 'home.apply_leave'.tr(), Icons.calendar_month_outlined, Colors.green, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaveApplicationScreen()))),
-                _buildMenuCard(context, 'home.smart_cam'.tr(), Icons.camera_alt_outlined, Colors.blue, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CameraScreen()))),
+                // 记得在文件顶部 import 'case_setup_screen.dart';
+                _buildMenuCard(context, 'home.smart_cam'.tr(), Icons.camera_alt_outlined, Colors.blue, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaseSetupScreen()))),
                 _buildMenuCard(context, 'home.payslip'.tr(), Icons.receipt_long, Colors.pink, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayslipScreen()))),
                 _buildMenuCard(context, 'home.profile'.tr(), Icons.person, Colors.purple, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
               ],
