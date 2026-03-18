@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:permission_handler/permission_handler.dart'; // 🚀 引入 permission_handler
 import 'notification_service.dart';
 import 'time_service.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -93,9 +94,15 @@ class TrackingNotifier extends Notifier<bool> {
   Future<void> startTracking(String userId, {bool isResume = false}) async {
     if (state && !isResume) return; 
 
+    // 1. 请求定位权限
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+    }
+
+    // 🚀 核心新增：2. 请求物理运动识别权限 (Activity Recognition)
+    if (await Permission.activityRecognition.isDenied) {
+      await Permission.activityRecognition.request();
     }
 
     if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {

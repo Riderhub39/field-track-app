@@ -1,7 +1,7 @@
 name: field_track_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.0.6+7
+version: 1.0.7+8
 
 environment:
   # 建议调高至 3.2.0 以上，以匹配较新的插件版本
@@ -16,15 +16,23 @@ dependencies:
   firebase_auth: ^5.0.0
   cloud_firestore: ^5.0.0
   firebase_storage: ^12.0.0
-  
+  firebase_messaging: ^15.2.10
+  firebase_database: ^11.3.10
   # Localization
   easy_localization: ^3.0.7
   intl: 0.20.2
   flutter_local_notifications: ^18.0.1
   timezone: ^0.9.4
-  shared_preferences: ^2.5.4
   flutter_timezone: ^3.0.1
+  ntp: ^2.0.0
+
+  shared_preferences: ^2.5.4
   flutter_background_service: ^5.1.0
+  sqflite: ^2.4.1
+  http: ^1.2.0
+  url_launcher: ^6.3.0
+  path_provider: ^2.1.3
+  path: ^1.9.0
   # Location and Maps
   geolocator: ^13.0.2
   geocoding: ^3.0.0
@@ -36,36 +44,30 @@ dependencies:
   # Camera and Assets
   camera: ^0.11.0+1
   image_picker: ^1.1.0
-  # 🟢 新增：谷歌 ML Kit 人脸检测
   google_mlkit_face_detection: ^0.11.0
-  network_info_plus: ^5.0.1
-  google_fonts: ^6.2.0
-  cupertino_icons: ^1.0.6
   tflite_flutter: ^0.11.0
   image: ^4.5.4
-  
-  # Utilities
-  sqflite: ^2.4.1
-  http: ^1.2.0
-  url_launcher: ^6.3.0
+
+  google_fonts: ^6.2.0
+  cupertino_icons: ^1.0.6
+  shimmer: ^3.0.0
   pdf: ^3.10.4
-  path_provider: ^2.1.3
   open_filex: ^4.3.2
   printing: ^5.11.0
-  path: ^1.9.0
-  provider: ^6.1.2
-  file_picker: ^10.3.10
-  gal: ^2.3.2
-  shimmer: ^3.0.0
-  flutter_riverpod: ^2.4.9
-  firebase_messaging: ^15.2.10
+  network_info_plus: ^5.0.1
   device_info_plus: ^12.3.0
-  riverpod: ^2.4.9
-  firebase_database: ^11.3.10
-  ntp: ^2.0.0
-  permission_handler: ^12.0.1
   package_info_plus: ^9.0.0
   
+  provider: ^6.1.2
+  flutter_riverpod: ^2.4.9
+  riverpod: ^2.4.9
+ 
+
+  file_picker: ^10.3.10
+  gal: ^2.3.2
+  permission_handler: ^12.0.1
+  flutter_activity_recognition: ^3.0.2
+  get: ^4.6.6
 
 dev_dependencies:
   # 修复 1：这里增加了缩进 (2个空格)

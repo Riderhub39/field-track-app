@@ -16,7 +16,7 @@ import 'leave_application_screen.dart';
 import 'payslip_screen.dart';
 import 'login_screen.dart'; 
 import 'home_controller.dart'; 
-
+import 'daily_task_screen.dart';
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -329,6 +329,9 @@ class HomeScreen extends ConsumerWidget {
                 _buildMenuCard(context, 'home.smart_cam'.tr(), Icons.camera_alt_outlined, Colors.blue, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaseSetupScreen()))),
                 _buildMenuCard(context, 'home.payslip'.tr(), Icons.receipt_long, Colors.pink, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayslipScreen()))),
                 _buildMenuCard(context, 'home.profile'.tr(), Icons.person, Colors.purple, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
+                _buildMenuCard(context,'Daily Task Update',Icons.assignment,Colors.blue,onTap: () => Navigator.push(context,MaterialPageRoute(builder: (_) => const DailyTaskScreen()),
+  ),
+),
               ],
             ),
           ),
