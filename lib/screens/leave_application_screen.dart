@@ -62,6 +62,50 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
     }
   }
 
+  // 🟢 新增：弹出底部菜单卡，让用户选择是上传图片还是 PDF
+  void _showAttachmentSourceDialog(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 16, left: 16, bottom: 8),
+              child: Text(
+                "Select File Type",
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[700], fontSize: 14),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library, color: Colors.blue),
+              title: const Text("Photo / Image"),
+              subtitle: const Text("From Gallery or Camera", style: TextStyle(fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                // 🟢 调用新方法 1：图片处理
+                ref.read(leaveApplicationProvider.notifier).pickImageAttachment();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf, color: Colors.orange),
+              title: const Text("PDF Document"),
+              subtitle: const Text("From Files / Local Storage", style: TextStyle(fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                // 🟢 调用新方法 2：文档处理
+                ref.read(leaveApplicationProvider.notifier).pickFileAttachment();
+              },
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(leaveApplicationProvider);
@@ -149,9 +193,8 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
             ),
             const SizedBox(height: 24),
 
-            // 🟢 修复 deprecated_member_use 警告
             DropdownButtonFormField<String>(
-              key: ValueKey(state.leaveTypeKey), // 加上 Key 确保状态改变时自动重绘初始值
+              key: ValueKey(state.leaveTypeKey), 
               initialValue: state.leaveTypeKey,
               decoration: InputDecoration(labelText: "leave.field_type".tr(), border: const OutlineInputBorder()),
               items: _leaveTypeKeys.map((k) => DropdownMenuItem(value: k, child: Text(k.tr()))).toList(),
@@ -208,7 +251,8 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
                     const SizedBox(height: 12),
                     
                     InkWell(
-                      onTap: () => ref.read(leaveApplicationProvider.notifier).pickAttachment(),
+                      // 🟢 修复错误：调用底部菜单弹窗，而非旧方法
+                      onTap: () => _showAttachmentSourceDialog(context, ref),
                       child: Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(vertical: 12),
@@ -371,7 +415,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
 
             String statusDisplay = status;
             
-            // 🟢 修复 curly_braces_in_flow_control_structures 警告
             if (status == 'Pending') {
               statusDisplay = "leave.status_pending".tr();
             } else if (status == 'Approved') {

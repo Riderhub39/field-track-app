@@ -1,3 +1,4 @@
+import 'dart:io'; // 🟢 新增：引入 dart:io 以使用 Platform
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -166,9 +167,28 @@ class SettingsNotifier extends AutoDisposeNotifier<SettingsState> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
             onPressed: () async {
               Navigator.pop(ctx);
-              final Uri url = Uri.parse(apkUrl);
-              if (await canLaunchUrl(url)) {
-                await launchUrl(url, mode: LaunchMode.externalApplication); // 外部浏览器打开，触发下载安装
+              
+              // 🟢 针对 iOS 拦截跳转，弹出提示框
+              if (Platform.isIOS) {
+                showDialog(
+                  context: context,
+                  builder: (innerCtx) => AlertDialog(
+                    title: const Text("Notice"),
+                    content: const Text("iOS update feature is not completed yet."),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(innerCtx),
+                        child: const Text("OK"),
+                      ),
+                    ],
+                  ),
+                );
+              } else {
+                // Android 保持原有的外部链接跳转逻辑
+                final Uri url = Uri.parse(apkUrl);
+                if (await canLaunchUrl(url)) {
+                  await launchUrl(url, mode: LaunchMode.externalApplication); 
+                }
               }
             },
             child: const Text("Update Now", style: TextStyle(color: Colors.white)),

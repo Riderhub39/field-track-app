@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart'; 
+import 'package:image_picker/image_picker.dart'; // 🟢 新增：引入 image_picker
 import 'package:easy_localization/easy_localization.dart';
 
 // ==========================================
@@ -76,6 +77,9 @@ class LeaveApplicationState {
 // 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
 class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState> {
   
+  // 🟢 新增：实例化 ImagePicker
+  final ImagePicker _picker = ImagePicker();
+
   // 🔴 CHANGED: 使用 build 方法初始化
   @override
   LeaveApplicationState build() {
@@ -103,11 +107,35 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
     state = state.copyWith(startDate: newStart, endDate: newEnd);
   }
 
-  Future<void> pickAttachment() async {
+  // ==========================================
+  // 🟢 附件处理模块 (已分为图片与文档)
+  // ==========================================
+
+  /// 方法 1：从相册选取图片 (适用于病假单拍照等)
+  Future<void> pickImageAttachment() async {
+    try {
+      final XFile? pickedImage = await _picker.pickImage(source: ImageSource.gallery);
+      if (pickedImage != null) {
+        // 🟢 将 XFile 巧妙转换为 PlatformFile，保持后续逻辑与 UI 零修改
+        final platformFile = PlatformFile(
+          name: pickedImage.name,
+          path: pickedImage.path,
+          size: await pickedImage.length(),
+        );
+        state = state.copyWith(selectedFile: platformFile);
+      }
+    } catch (e) {
+      debugPrint("Error picking image: $e");
+      state = state.copyWith(errorMessage: "Failed to load image", clearMessages: true);
+    }
+  }
+
+  /// 方法 2：使用系统的文件选择器选取文档 (适用于 PDF 报告等)
+  Future<void> pickFileAttachment() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['jpg', 'jpeg', 'png', 'pdf'], 
+        allowedExtensions: ['pdf', 'doc', 'docx'], // 限制为文档格式
       );
 
       if (result != null) {
@@ -115,12 +143,17 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
       }
     } catch (e) {
       debugPrint("Error picking file: $e");
+      state = state.copyWith(errorMessage: "Failed to load file", clearMessages: true);
     }
   }
 
   void removeAttachment() {
     state = state.copyWith(clearFile: true);
   }
+
+  // ==========================================
+  // 业务逻辑模块
+  // ==========================================
 
   int calculateWorkingDays(DateTime? start, DateTime? end) {
     if (start == null || end == null) return 0;

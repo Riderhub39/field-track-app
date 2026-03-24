@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io'; // 🟢 新增：引入 Platform
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart'; 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -61,10 +62,15 @@ class NotificationService {
         },
       );
       
-      final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
-          _notificationsPlugin.resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
-      await androidImplementation?.requestNotificationsPermission();
+      // ========================================
+      // 🟢 修改：仅在 Android 平台调用 Android 特有的权限请求
+      // ========================================
+      if (Platform.isAndroid) {
+        final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
+            _notificationsPlugin.resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>();
+        await androidImplementation?.requestNotificationsPermission();
+      }
 
       // ========================================
       // FCM Initialization
@@ -211,6 +217,11 @@ class NotificationService {
 
   Future<void> showTrackingNotification() async {
     if (!await _canShowNotification()) return;
+
+    // 🟢 修改：iOS 系统自身会显示蓝条，无需在此额外弹出常驻通知栏
+    if (Platform.isIOS) {
+      return; 
+    }
 
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       _trackingChannelId,

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io'; // 🟢 新增：引入 Platform
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -123,8 +124,24 @@ void onStart(ServiceInstance service) async {
     positionSubscription?.cancel(); // 关掉旧的流
     debugPrint("🔄 GPS Engine Switched to: [$modeName] (Accuracy: $accuracy, Filter: ${distanceFilter}m)");
 
+    // 🟢 修改：根据平台动态分发 LocationSettings，保留原有 Android 逻辑
+    LocationSettings locationSettings;
+    if (Platform.isIOS) {
+      locationSettings = AppleSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+        pauseLocationUpdatesAutomatically: false,
+        showBackgroundLocationIndicator: true,
+      );
+    } else {
+      locationSettings = LocationSettings(
+        accuracy: accuracy, 
+        distanceFilter: distanceFilter
+      );
+    }
+
     positionSubscription = Geolocator.getPositionStream(
-      locationSettings: LocationSettings(accuracy: accuracy, distanceFilter: distanceFilter),
+      locationSettings: locationSettings,
     ).listen((Position position) async {
       
       // 🚨 优化 1：拦截“虚拟定位”防作弊 (Fake GPS)

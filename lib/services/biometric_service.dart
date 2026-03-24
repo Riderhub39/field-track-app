@@ -1,6 +1,8 @@
+import 'dart:io'; // 🟢 新增：引入 Platform
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
+
 class BiometricService {
   final LocalAuthentication _auth = LocalAuthentication();
 
@@ -21,9 +23,14 @@ class BiometricService {
       // Check support again just in case
       if (!await isDeviceSupported()) return false;
 
+      // 🟢 修改：动态设置提示文案，保持 Android 原有文案完全不变
+      String reason = Platform.isIOS 
+          ? 'Please verify with Face ID / Touch ID' 
+          : 'Please verify your identity';
+
       // Trigger UI
       return await _auth.authenticate(
-        localizedReason: 'Please verify your identity',
+        localizedReason: reason,
         options: const AuthenticationOptions(
           stickyAuth: true,
           biometricOnly: true,
