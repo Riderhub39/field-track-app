@@ -18,7 +18,7 @@ import '../services/time_service.dart';
 import 'package:easy_localization/easy_localization.dart';
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
-import 'package:firebase_database/firebase_database.dart';
+// 移除了 firebase_database 的引入，因为这里不再需要直接操作 RTDB
 
 // ==========================================
 // 1. 状态定义 (State)
@@ -155,18 +155,28 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
   }
 
   Future<void> _initAll() async {
-    await _checkPDPAConsent();
+    try {
+      await _checkPDPAConsent();
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user != null) {
-      NotificationService().bindFCMToken(user.uid);
-      await _fetchUserData(user.uid);
-      _listenToTodayAttendance(user.uid);
-    }
-    _fetchOfficeSettings(); 
-    
-    if (!state.shouldShowLocationConsent) {
-      await _initLocation();
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        NotificationService().bindFCMToken(user.uid);
+        await _fetchUserData(user.uid);
+        _listenToTodayAttendance(user.uid);
+      }
+      
+      await _fetchOfficeSettings(); 
+      
+      if (!state.shouldShowLocationConsent) {
+        await _initLocation();
+      }
+    } catch (e) {
+      debugPrint("Initialization error: $e");
+      state = state.copyWith(
+        errorMessage: "Init Error: ${e.toString()}",
+        isFetchingUser: false,
+        isLoading: false,
+      );
     }
   }
 
@@ -236,9 +246,12 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
           referenceFaceIdPath: refFacePath,
           isFetchingUser: false,
         );
+      } else {
+        throw "User profile not found in Firestore.";
       }
     } catch (e) {
-      state = state.copyWith(isFetchingUser: false);
+      state = state.copyWith(errorMessage: "User Data Error: $e", isFetchingUser: false);
+      rethrow; 
     }
   }
 
@@ -274,15 +287,13 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
       DateTime? lastPunch;
 
       final docs = snapshot.docs;
-      // 🟢 严格按照 Timestamp 排序，保证拿到的是绝对最新的状态
       docs.sort((a, b) => (a['timestamp'] as Timestamp).compareTo(b['timestamp'] as Timestamp));
 
       if (docs.isNotEmpty) {
         final lastData = docs.last.data();
-        lastSess = lastData['session']; // 这就是 timestamp 最近的一次操作
+        lastSess = lastData['session']; 
         lastPunch = (lastData['timestamp'] as Timestamp).toDate();
         
-        // 🟢 UI 锁定标识：只要今天有过 Clock Out 就锁死界面
         clockedOut = docs.any((doc) => doc.data()['session'] == 'Clock Out');
 
         for (var doc in docs) {
@@ -294,8 +305,6 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
         }
       }
 
-      // 🚀 核心拦截逻辑：停止定位只看“最近一次状态 (lastSess)”
-      // 如果最新操作是下班 或 休息（无论是员工自己点还是Admin点），立刻停止定位
       if (lastSess == 'Clock Out' || lastSess == 'Break Out') {
         try {
           ref.read(trackingProvider.notifier).stopTracking();
@@ -326,9 +335,15 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
           markers: { Marker(markerId: const MarkerId('current'), position: latLng) },
           currentAddress: addr,
         );
+      } else {
+        throw "GPS service disabled or permission denied.";
       }
     } catch (e) {
-      state = state.copyWith(currentAddress: "att.location_error");
+      state = state.copyWith(
+        currentAddress: "att.location_error",
+        errorMessage: "Location Service Error: $e",
+        isLoading: false,
+      );
     }
   }
 
@@ -507,21 +522,9 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
 
       await docRef.set(newRecord);
 
+      // 🟢 核心修复：纯净代理给 tracking_service 决定是否定位，不在此处强行写入 RTDB
       if (action == 'Clock In' || action == 'Break In') {
         ref.read(trackingProvider.notifier).startTracking(uid);
-        try {
-          FirebaseDatabase.instance.ref("live_locations/$uid").update({
-            'uid': uid,
-            'lat': position.latitude,
-            'lng': position.longitude,
-            'speed': 0.0, 
-            'heading': 0.0,
-            'lastUpdate': ServerValue.timestamp, 
-            'isTracking': true,
-          });
-        } catch (e) {
-          debugPrint("❌ Init Location Upload Failed: $e");
-        }
       } else if (action == 'Break Out' || action == 'Clock Out') {
         ref.read(trackingProvider.notifier).stopTracking();
       }

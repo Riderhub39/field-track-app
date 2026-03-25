@@ -2,7 +2,6 @@
 
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/material.dart'; 
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -11,6 +10,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart'; 
+// 🟢 新增：用于处理图片压缩的库
+import 'package:image/image.dart' as img; 
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
 import '../services/biometric_service.dart';
@@ -39,6 +40,8 @@ class HomeState {
   final String? successMessage;
   final String? errorMessage;
 
+  final bool isProcessing;
+
   HomeState({
     this.staffName = "Staff",
     this.faceIdPhotoPath,
@@ -56,6 +59,7 @@ class HomeState {
 
     this.successMessage,
     this.errorMessage,
+    this.isProcessing = false,
   });
 
   HomeState copyWith({
@@ -76,6 +80,7 @@ class HomeState {
     String? successMessage,
     String? errorMessage,
     bool clearMessages = false,
+    bool? isProcessing,
   }) {
     return HomeState(
       staffName: staffName ?? this.staffName,
@@ -94,6 +99,7 @@ class HomeState {
 
       successMessage: clearMessages ? null : (successMessage ?? this.successMessage),
       errorMessage: clearMessages ? null : (errorMessage ?? this.errorMessage),
+      isProcessing: isProcessing ?? this.isProcessing,
     );
   }
 }
@@ -120,28 +126,20 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 
   void _initAll() async {
-    // 1. 静默检查更新
     _checkForUpdates(); 
-    
-    // 2. 启动实时监听
     _listenToUserStatus();
     _startDeviceMonitoring();
     _listenForAnnouncements();
 
-    // 3. 恢复用户状态与后台服务
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
       NotificationService().startListeningToUserUpdates(user.uid);
       _checkAndResumeTracking(user.uid);
     }
 
-    // 4. 延迟检查生物识别
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
 
-  // ==========================================
-  // 🟢 模块：版本更新检查
-  // ==========================================
   Future<void> _checkForUpdates() async {
     try {
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
@@ -175,9 +173,6 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowUpdatePrompt: false);
   }
 
-  // ==========================================
-  // 模块：账号状态与设备踢出监听
-  // ==========================================
   void _startDeviceMonitoring() {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
@@ -257,9 +252,6 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowLogoutDialog: false);
   }
 
-  // ==========================================
-  // 模块：全局公告监听
-  // ==========================================
   void _listenForAnnouncements() {
     _announcementSubscription = FirebaseFirestore.instance
         .collection('announcements')
@@ -298,9 +290,6 @@ class HomeNotifier extends Notifier<HomeState> {
     state = state.copyWith(shouldShowAnnouncement: false);
   }
 
-  // ==========================================
-  // 模块：生物识别检查
-  // ==========================================
   Future<void> _checkBiometricSetup() async {
     final prefs = await SharedPreferences.getInstance();
     bool hasAsked = prefs.getBool('has_asked_biometrics') ?? false;
@@ -336,9 +325,6 @@ class HomeNotifier extends Notifier<HomeState> {
     }
   }
 
-  // ==========================================
-  // 模块：辅助与清理函数
-  // ==========================================
   void _checkAndResumeTracking(String uid) {
     ref.read(trackingProvider.notifier).resumeTrackingSession(uid);
   }
@@ -353,22 +339,53 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 
   // ==========================================
-  // 模块：头像上传
+  // 模块：头像上传 (集成压缩功能)
+  // ==========================================
+ // ==========================================
+  // 模块：头像上传 (已集成压缩与状态管理)
   // ==========================================
   Future<void> uploadProfilePhoto(XFile photo) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    // 🟢 1. 开始处理：显示全屏加载遮罩
+    state = state.copyWith(isProcessing: true, clearMessages: true);
+
     try {
+      // 🟢 2. 读取原始文件并进行图片压缩逻辑
+      final File originalFile = File(photo.path);
+      final Uint8List bytes = await originalFile.readAsBytes();
+      img.Image? decodedImage = img.decodeImage(bytes);
+
+      File fileToUpload = originalFile;
+
+      if (decodedImage != null) {
+        // 如果宽度超过 800px，则等比缩放 (针对高像素手机优化)
+        if (decodedImage.width > 800) {
+          decodedImage = img.copyResize(decodedImage, width: 800);
+        }
+        
+        // 使用 75% 的质量压缩并转为 JPG 字节
+        final compressedBytes = img.encodeJpg(decodedImage, quality: 75);
+        
+        // 将压缩后的数据写入系统临时目录
+        final String tempPath = '${Directory.systemTemp.path}/comp_${DateTime.now().millisecondsSinceEpoch}.jpg';
+        fileToUpload = await File(tempPath).writeAsBytes(compressedBytes);
+        
+        debugPrint("Image Compression: ${bytes.length} -> ${compressedBytes.length} bytes");
+      }
+
       final String fileName = 'face_id_${user.uid}.jpg';
       final Reference storageRef = FirebaseStorage.instance
           .ref()
           .child('user_faces')
           .child(fileName);
 
-      await storageRef.putFile(File(photo.path));
+      // 🟢 3. 上传到 Firebase Storage
+      await storageRef.putFile(fileToUpload);
       final String downloadUrl = await storageRef.getDownloadURL();
 
+      // 🟢 4. 更新 Firestore 用户文档
       final q = await FirebaseFirestore.instance
           .collection('users')
           .where('authUid', isEqualTo: user.uid)
@@ -382,17 +399,35 @@ class HomeNotifier extends Notifier<HomeState> {
           'lastFaceUpdate': FieldValue.serverTimestamp(),
         });
 
+        // ✅ 成功出口：更新路径并关闭加载状态
         state = state.copyWith(
           faceIdPhotoPath: downloadUrl,
           successMessage: 'profile.save_success',
+          isProcessing: false,
+        );
+      } else {
+        // ⚠️ 异常出口：找不到文档，也要关闭加载状态
+        state = state.copyWith(
+          errorMessage: 'User document not found',
+          isProcessing: false,
         );
       }
+
+      // 🟢 5. 清理临时生成的压缩文件
+      if (fileToUpload.path.contains('/comp_')) {
+        await fileToUpload.delete();
+      }
+
     } catch (e) {
       debugPrint("Error updating photo: $e");
-      state = state.copyWith(errorMessage: 'home.msg_upload_fail');
+      // ❌ 错误出口：务必关闭加载状态，否则 UI 会一直转圈
+      state = state.copyWith(
+        errorMessage: 'home.msg_upload_fail',
+        isProcessing: false,
+      );
     }
   }
-}
+  }
 
 final homeProvider = NotifierProvider<HomeNotifier, HomeState>(() {
   return HomeNotifier();

@@ -1,3 +1,4 @@
+import 'dart:async'; // 🟢 新增：引入 async 以支持 TimeoutException
 import 'dart:io'; // 引入 Platform
 import 'package:geolocator/geolocator.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -54,8 +55,15 @@ class LocationService {
       );
     }
 
+    // 🟢 核心修复：添加 10 秒超时强制打断，防止 Honor/Android 在无 GPS 信号时无限卡死
     return await Geolocator.getCurrentPosition(
       locationSettings: locationSettings,
+    ).timeout(
+      const Duration(seconds: 10),
+      onTimeout: () {
+        debugPrint("❌ GPS Timeout: Unable to get location within 10 seconds.");
+        throw TimeoutException('Location request timed out. Please check your GPS signal.');
+      },
     );
   }
 

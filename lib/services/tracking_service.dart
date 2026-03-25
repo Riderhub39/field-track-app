@@ -59,27 +59,29 @@ class TrackingNotifier extends Notifier<bool> {
           final lastSession = validDocs.last.data()['session'];
 
           if (lastSession == 'Clock In' || lastSession == 'Break In') {
-            if (!state) {
-              await startTracking(authUid, isResume: true);
-            }
+            // 🟢 核心修复 2：无论如何都强制校验一次司机权限
+            await startTracking(authUid, isResume: true);
 
-            try {
-              LocationPermission permission = await Geolocator.checkPermission();
-              if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-                Position pos = await Geolocator.getCurrentPosition(
-                  locationSettings: const LocationSettings(accuracy: LocationAccuracy.high)
-                ).timeout(const Duration(seconds: 10));
+            // 🟢 核心修复 3：只有状态确实为 true（成功通过了司机校验）才推送坐标
+            if (state) {
+              try {
+                LocationPermission permission = await Geolocator.checkPermission();
+                if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
+                  Position pos = await Geolocator.getCurrentPosition(
+                    locationSettings: const LocationSettings(accuracy: LocationAccuracy.high)
+                  ).timeout(const Duration(seconds: 10));
 
-                await FirebaseDatabase.instance.ref("live_locations/$authUid").update({
-                  'uid': authUid,
-                  'lat': pos.latitude,
-                  'lng': pos.longitude,
-                  'lastUpdate': ServerValue.timestamp,
-                });
+                  await FirebaseDatabase.instance.ref("live_locations/$authUid").update({
+                    'uid': authUid,
+                    'lat': pos.latitude,
+                    'lng': pos.longitude,
+                    'lastUpdate': ServerValue.timestamp,
+                  });
+                }
+              } catch (e) {
+                debugPrint("❌ [App Resume] Location Push Failed: $e");
               }
-            } catch (e) {
-              debugPrint("❌ [App Resume] Location Push Failed: $e");
-            }
+            } // <- if(state) 结束
             
           } else if (lastSession == 'Clock Out' || lastSession == 'Break Out') {
             await stopTracking();
@@ -118,6 +120,8 @@ class TrackingNotifier extends Notifier<bool> {
 
         if (!isDriver) {
           debugPrint("🚫 User is not a driver. Tracking aborted.");
+          // 🟢 核心修复 1：如果发现权限被撤销，强制清理可能残留的追踪状态和后台服务
+          await stopTracking(); 
           return;
         }
 
@@ -149,6 +153,7 @@ class TrackingNotifier extends Notifier<bool> {
         // 🚀 核心防御：如果当前时间已经超过了下班时间，直接拒绝启动追踪！
         if (now.isAfter(shiftEndTime)) {
           debugPrint("🚫 Shift time has passed. Tracking will not start.");
+          await stopTracking(); // 超过下班时间也强制清理一下状态
           return; 
         }
 

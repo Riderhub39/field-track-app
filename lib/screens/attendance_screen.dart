@@ -20,7 +20,7 @@ class AttendanceScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(attendanceProvider);
 
-    // 🟢 统一监听器：处理 PDPA 弹窗及反馈消息
+    // 🟢 统一监听器：处理 PDPA 弹窗、成功反馈及错误诊断
     ref.listen(attendanceProvider, (previous, next) {
       // 1. PDPA 定位授权询问
       if (next.shouldShowLocationConsent && !(previous?.shouldShowLocationConsent ?? false)) {
@@ -65,10 +65,60 @@ class AttendanceScreen extends ConsumerWidget {
         );
       }
       
-      // 3. 错误消息提示
+      // 3. 错误诊断弹窗 (专门捕获 Honor 等设备可能出现的初始化/定位失败问题)
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(next.errorMessage!), backgroundColor: Colors.red),
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Row(
+              children: [
+                Icon(Icons.error_outline, color: Colors.red, size: 28),
+                SizedBox(width: 10),
+                Text("System Alert", style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("An issue occurred on this device:", style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.red.withValues(alpha:0.3)),
+                  ),
+                  child: Text(
+                    next.errorMessage!, 
+                    style: const TextStyle(fontSize: 13, color: Colors.redAccent, fontFamily: 'monospace'),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text("Tip: Ensure GPS is on and you are in an open area.", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  ref.read(attendanceProvider.notifier).clearMessages();
+                },
+                child: const Text("CLOSE", style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF15438c)),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  ref.invalidate(attendanceProvider); 
+                },
+                child: const Text("RETRY", style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         );
       }
     });
@@ -125,25 +175,20 @@ class AttendanceScreen extends ConsumerWidget {
     );
   }
 
-  // 🟢 模块：PDPA 定位授权询问弹窗
   void _showPDPADialog(BuildContext context, WidgetRef ref) {
     showDialog(
       context: context,
-      barrierDismissible: false, // 强制用户做出选择
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: Row(
           children: [
             const Icon(Icons.privacy_tip_outlined, color: Color(0xFF15438c), size: 28),
             const SizedBox(width: 10),
-            // 🚀 核心修复：使用 Expanded 限制宽度并允许自动换行
             Expanded(
               child: Text(
                 "att.pdpa_title".tr(), 
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold, 
-                  fontSize: 18, // 稍微调小字号，避免视觉冲击力过大
-                ),
+                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
               ),
             ),
           ],
@@ -153,7 +198,6 @@ class AttendanceScreen extends ConsumerWidget {
           style: const TextStyle(fontSize: 14, height: 1.5),
         ),
         actions: [
-          // 🟢 Ignore 按钮：点击后永久标记不再提醒
           TextButton(
             onPressed: () {
               Navigator.pop(ctx);
@@ -161,7 +205,6 @@ class AttendanceScreen extends ConsumerWidget {
             },
             child: Text("att.btn_ignore".tr(), style: const TextStyle(color: Colors.grey)),
           ),
-          // 🟢 Consent 按钮：仅同意本次
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFF15438c),
@@ -557,15 +600,17 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 }
 
 // ==========================================
-//  Tab 2: History (保持不变)
+//  Tab 2: History
 // ==========================================
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
   @override
   State<HistoryTab> createState() => _HistoryTabState();
 }
+
 class _HistoryTabState extends State<HistoryTab> {
   bool _isDescending = true;
+
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
@@ -609,10 +654,11 @@ class _HistoryTabState extends State<HistoryTab> {
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) return const ShimmerLoadingList();
               
+              // 🟢 核心修改：不再隐藏 Admin 的操作，只隐藏系统自动生成的记录
               final docs = (snapshot.data?.docs ?? []).where((d) {
                 final data = d.data() as Map<String, dynamic>;
-                final address = data['address']?.toString() ?? '';
-                if (address.contains("Admin Manual") || address.contains("Admin Override") || address.contains("System Auto Clock Out")) return false;
+                final addressStr = data['address']?.toString() ?? '';
+                if (addressStr.contains("System Auto Clock Out")) return false;
                 return true;
               }).toList();
 
@@ -630,12 +676,17 @@ class _HistoryTabState extends State<HistoryTab> {
                   String displayDate = DateFormat('dd-MM-yyyy', context.locale.languageCode).format(ts);
                   String status = data['verificationStatus'] ?? 'Pending';
                   bool isArchived = status == 'Archived';
+                  
+                  // 🟢 新增：判断是否为管理员手动添加/修改的记录
+                  final addressStr = data['address']?.toString() ?? '';
+                  bool isAdminEntry = addressStr.contains("Admin Manual") || addressStr.contains("Admin Override") || addressStr.contains("Admin Edit");
 
                   return Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: isArchived ? Colors.grey.shade50 : Colors.white, 
-                      border: Border.all(color: Colors.grey.shade300),
+                      // 为 Admin 记录添加淡黄色背景作为区分
+                      color: isArchived ? Colors.grey.shade50 : (isAdminEntry ? Colors.amber.shade50 : Colors.white), 
+                      border: Border.all(color: isAdminEntry ? Colors.orange.shade300 : Colors.grey.shade300),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Row(
@@ -648,6 +699,15 @@ class _HistoryTabState extends State<HistoryTab> {
                             children: [
                               Text(displayDate, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: isArchived ? Colors.grey : Colors.black54)),
                               Text(displayTime, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isArchived ? Colors.grey : Colors.black87, decoration: isArchived ? TextDecoration.lineThrough : null)), 
+                              
+                              // 🟢 新增：管理员操作标签
+                              if (isAdminEntry)
+                                Container(
+                                  margin: const EdgeInsets.only(top: 4),
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                  decoration: BoxDecoration(color: Colors.orange, borderRadius: BorderRadius.circular(4)),
+                                  child: const Text("BY ADMIN", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 0.5)),
+                                )
                             ],
                           ),
                         ),

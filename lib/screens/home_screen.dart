@@ -17,10 +17,59 @@ import 'payslip_screen.dart';
 import 'login_screen.dart'; 
 import 'home_controller.dart'; 
 import 'daily_task_screen.dart';
+
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   // ========== UI Action Helpers ==========
+
+  // 🟢 新增：上传失败时的详细错误对话框
+  void _showErrorDetailDialog(BuildContext context, String error, WidgetRef ref) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        title:const Row(
+          children: [
+          Icon(Icons.error_outline, color: Colors.red),
+          SizedBox(width: 10),
+          Text("Upload Failed", style: TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("An error occurred during the process:", style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.grey[100],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: Text(
+                error, // 显示具体的 Exception 字符串
+                style: const TextStyle(fontSize: 13, color: Colors.redAccent, fontFamily: 'monospace'),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              ref.read(homeProvider.notifier).clearMessages(); // 清除状态防止重复弹窗
+            },
+            child: const Text("OK", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
 
   void _showAutoUpdateDialog(BuildContext context, WidgetRef ref, String latestVersion, String releaseNotes, String apkUrl, bool forceUpdate) {
     showDialog(
@@ -250,10 +299,12 @@ class HomeScreen extends ConsumerWidget {
       if (next.shouldShowBiometricPrompt && !(previous?.shouldShowBiometricPrompt ?? false)) {
         _showBiometricDialog(context, ref);
       }
+
+      // 🟢 修改：不再使用 SnackBar 显示错误，改为弹出详细对话框
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.errorMessage!.tr()), backgroundColor: Colors.red));
-        ref.read(homeProvider.notifier).clearMessages();
+        _showErrorDetailDialog(context, next.errorMessage!, ref);
       }
+
       if (next.successMessage != null && next.successMessage != previous?.successMessage) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!.tr()), backgroundColor: Colors.green));
         ref.read(homeProvider.notifier).clearMessages();
@@ -262,81 +313,90 @@ class HomeScreen extends ConsumerWidget {
 
     final profileImage = _getProfileImage(state.faceIdPhotoPath);
 
-    return Scaffold(
-      backgroundColor: Colors.grey[100],
-      appBar: AppBar(
-        title: Text('home.app_title'.tr()),
-        backgroundColor: Colors.blue,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        scrolledUnderElevation: 0, 
-        actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: GestureDetector(
-              onTap: () => _openCustomCamera(context, ref),
-              child: Container(
-                margin: const EdgeInsets.all(8),
-                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
-                child: CircleAvatar(
-                  radius: 18,
-                  backgroundColor: Colors.blue.shade700,
-                  backgroundImage: profileImage,
-                  child: profileImage == null ? const Icon(Icons.add_a_photo, size: 20, color: Colors.white) : null,
+    return Stack(
+      children: [
+        Scaffold(
+          backgroundColor: Colors.grey[100],
+          appBar: AppBar(
+            title: Text('home.app_title'.tr()),
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            scrolledUnderElevation: 0, 
+            actions: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8.0),
+                child: GestureDetector(
+                  onTap: () => _openCustomCamera(context, ref),
+                  child: Container(
+                    margin: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Colors.white, width: 2)),
+                    child: CircleAvatar(
+                      radius: 18,
+                      backgroundColor: Colors.blue.shade700,
+                      backgroundImage: profileImage,
+                      child: profileImage == null ? const Icon(Icons.add_a_photo, size: 20, color: Colors.white) : null,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
+              ),
+            ],
           ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SettingsScreen())),
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(24),
+                decoration: const BoxDecoration(
+                  color: Colors.blue,
+                  borderRadius: BorderRadius.only(bottomLeft: Radius.circular(30), bottomRight: Radius.circular(30)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('home.welcome'.tr(), style: const TextStyle(color: Colors.white70)),
+                    Text(state.staffName, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+                child: Text('home.menu_main'.tr(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+              Expanded(
+                child: GridView.count(
+                  crossAxisCount: 2,
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  crossAxisSpacing: 20,
+                  mainAxisSpacing: 20,
+                  childAspectRatio: 1.1,
+                  children: [
+                    _buildMenuCard(context, 'home.att_center'.tr(), Icons.access_time_filled, Colors.orange, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AttendanceScreen()))),
+                    _buildMenuCard(context, 'home.apply_leave'.tr(), Icons.calendar_month_outlined, Colors.green, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaveApplicationScreen()))),
+                    _buildMenuCard(context, 'home.smart_cam'.tr(), Icons.camera_alt_outlined, Colors.blue, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaseSetupScreen()))),
+                    _buildMenuCard(context, 'home.payslip'.tr(), Icons.receipt_long, Colors.pink, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayslipScreen()))),
+                    _buildMenuCard(context, 'home.profile'.tr(), Icons.person, Colors.purple, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
+                    _buildMenuCard(
+                      context,
+                      'Daily Task Update',
+                      Icons.assignment,
+                      Colors.blue,
+                      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DailyTaskScreen())),
+                    ),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(24),
-            decoration: const BoxDecoration(
-              color: Colors.blue,
-              borderRadius: BorderRadius.only(bottomLeft: Radius.circular(30), bottomRight: Radius.circular(30)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('home.welcome'.tr(), style: const TextStyle(color: Colors.white70)),
-                Text(state.staffName, style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
-            child: Text('home.menu_main'.tr(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          ),
-          Expanded(
-            child: GridView.count(
-              crossAxisCount: 2,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              crossAxisSpacing: 20,
-              mainAxisSpacing: 20,
-              childAspectRatio: 1.1,
-              children: [
-                _buildMenuCard(context, 'home.att_center'.tr(), Icons.access_time_filled, Colors.orange, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AttendanceScreen()))),
-                _buildMenuCard(context, 'home.apply_leave'.tr(), Icons.calendar_month_outlined, Colors.green, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const LeaveApplicationScreen()))),
-                // 记得在文件顶部 import 'case_setup_screen.dart';
-                _buildMenuCard(context, 'home.smart_cam'.tr(), Icons.camera_alt_outlined, Colors.blue, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaseSetupScreen()))),
-                _buildMenuCard(context, 'home.payslip'.tr(), Icons.receipt_long, Colors.pink, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PayslipScreen()))),
-                _buildMenuCard(context, 'home.profile'.tr(), Icons.person, Colors.purple, onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfileScreen()))),
-                _buildMenuCard(context,'Daily Task Update',Icons.assignment,Colors.blue,onTap: () => Navigator.push(context,MaterialPageRoute(builder: (_) => const DailyTaskScreen()),
-  ),
-),
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+
+       
+      ],
     );
   }
 

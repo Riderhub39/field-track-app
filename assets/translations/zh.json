@@ -57,6 +57,7 @@
     "soon": "即将推出",
     "msg_uploading": "正在上传头像... 请稍候。",
     "msg_upload_fail": "上传失败"
+    
   },
   "settings": {
     "title": "设置",
