@@ -144,8 +144,11 @@ class DailyTaskNotifier extends AutoDisposeNotifier<DailyTaskState> {
         userId: FirebaseAuth.instance.currentUser?.uid ?? '',
       );
 
-      // 3. 保存到 Firestore
-      await FirebaseFirestore.instance.collection('daily_tasks').add(newTask.toJson());
+      // 3. 保存到 Firestore (🟢 新增 isRead: false)
+      final taskData = newTask.toJson();
+      taskData['isRead'] = false; // 默认状态为未读
+
+      await FirebaseFirestore.instance.collection('daily_tasks').add(taskData);
       
       // 成功后通知 UI 执行弹窗和页面返回
       state = state.copyWith(
