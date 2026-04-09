@@ -114,6 +114,10 @@ class AuthService {
     try {
       String deviceId = await _getDeviceId();
       
+      // 🟢 【修复1】：将成功登录时的真实设备ID写入本地缓存，作为后续对比的绝对基准
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('local_session_device_id', deviceId);
+      
       // 兼容两种不同的 UID 绑定方式 (authUid 字段或直接使用 doc id)
       final querySnapshot = await _db.collection('users').where('authUid', isEqualTo: uid).limit(1).get();
       
@@ -128,7 +132,7 @@ class AuthService {
           'lastLoginTime': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       }
-      debugPrint("📱 Device ID updated: $deviceId");
+      debugPrint("📱 Device ID updated to cloud and local: $deviceId");
     } catch (e) {
       debugPrint("Error updating device ID: $e");
     }
@@ -136,16 +140,30 @@ class AuthService {
 
   // 持续监听设备 ID 是否发生变化
   Stream<bool> listenForDeviceKickOut(String uid) async* {
-    String currentDeviceId = await _getDeviceId();
+    // 🟢 【修复2】：只认本地缓存的基准 ID，避免二次调用硬件接口发生波动
+    final prefs = await SharedPreferences.getInstance();
+    String? localDeviceId = prefs.getString('local_session_device_id');
+    
+    // 如果无法获取可靠的本地设备ID，为了防止误踢，直接不执行监听
+    if (localDeviceId == null || localDeviceId == 'unknown_device' || localDeviceId == 'unknown_ios_device') {
+       debugPrint("⚠️ Local Device ID is unreliable, skipping kick-out listener to prevent false positives.");
+       yield false;
+       return;
+    }
     
     yield* _db.collection('users').where('authUid', isEqualTo: uid).snapshots().map((snapshot) {
       if (snapshot.docs.isNotEmpty) {
         final data = snapshot.docs.first.data();
         String? remoteDeviceId = data['currentDeviceId'];
         
-        // 如果云端的设备 ID 和当前设备的 ID 不一致，说明账号在别处登录了
-        if (remoteDeviceId != null && remoteDeviceId != currentDeviceId) {
-          debugPrint("⚠️ Account logged in on another device!");
+        // 🟢 【修复3】：核心防弹逻辑
+        // 只有当云端设备 ID 存在，且与我们本地的绝对基准 ID 明确不一致时，才踢出
+        if (remoteDeviceId != null && 
+            remoteDeviceId.isNotEmpty && 
+            remoteDeviceId != localDeviceId) {
+          
+          debugPrint("⚠️ Account logged in on another mobile device!");
+          debugPrint("Local Base ID: $localDeviceId | Remote Cloud ID: $remoteDeviceId");
           return true; // 返回 true 触发踢出逻辑
         }
       }
@@ -157,9 +175,10 @@ class AuthService {
   Future<void> forceLogout(BuildContext context) async {
     await signOut();
     
-    // 清除生物识别等本地敏感缓存
+    // 清除生物识别和设备基准ID的缓存
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('biometricEnabled'); 
+    await prefs.remove('local_session_device_id'); 
     
     if (context.mounted) {
       showDialog(
