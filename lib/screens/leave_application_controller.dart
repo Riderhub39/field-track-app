@@ -5,11 +5,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:file_picker/file_picker.dart'; 
-import 'package:image_picker/image_picker.dart'; // 🟢 新增：引入 image_picker
+import 'package:image_picker/image_picker.dart'; 
 import 'package:easy_localization/easy_localization.dart';
 
 // ==========================================
-// 1. 状态定义 (State) - 保持不变
+// 1. 状态定义 (State)
 // ==========================================
 class LeaveApplicationState {
   final bool isLoading;
@@ -18,6 +18,7 @@ class LeaveApplicationState {
   
   // 表单数据
   final String leaveTypeKey;
+  final String leaveDuration; // 🟢 新增：用于判断请假时长 (Full Day, Half Day AM, Half Day PM)
   final DateTime? startDate;
   final DateTime? endDate;
   final PlatformFile? selectedFile;
@@ -36,6 +37,7 @@ class LeaveApplicationState {
       'total_medical': 0 
     },
     this.leaveTypeKey = 'leave.type_annual',
+    this.leaveDuration = 'Full Day', // 🟢 新增：默认为全天
     this.startDate,
     this.endDate,
     this.selectedFile,
@@ -48,6 +50,7 @@ class LeaveApplicationState {
     bool? balanceLoaded,
     Map<String, dynamic>? balances,
     String? leaveTypeKey,
+    String? leaveDuration, // 🟢 新增
     DateTime? startDate,
     DateTime? endDate,
     PlatformFile? selectedFile,
@@ -62,6 +65,7 @@ class LeaveApplicationState {
       balanceLoaded: balanceLoaded ?? this.balanceLoaded,
       balances: balances ?? this.balances,
       leaveTypeKey: leaveTypeKey ?? this.leaveTypeKey,
+      leaveDuration: leaveDuration ?? this.leaveDuration, // 🟢 新增
       startDate: clearDates ? null : (startDate ?? this.startDate),
       endDate: clearDates ? null : (endDate ?? this.endDate),
       selectedFile: clearFile ? null : (selectedFile ?? this.selectedFile),
@@ -74,13 +78,10 @@ class LeaveApplicationState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🔴 CHANGED: 从 StateNotifier 迁移至 AutoDisposeNotifier
 class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState> {
   
-  // 🟢 新增：实例化 ImagePicker
   final ImagePicker _picker = ImagePicker();
 
-  // 🔴 CHANGED: 使用 build 方法初始化
   @override
   LeaveApplicationState build() {
     // 异步加载余额，不阻塞初始状态返回
@@ -96,6 +97,11 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
     state = state.copyWith(leaveTypeKey: typeKey);
   }
 
+  // 🟢 新增：设置请假时长（全天 / 半天）
+  void setLeaveDuration(String duration) {
+    state = state.copyWith(leaveDuration: duration);
+  }
+
   void setDates({DateTime? start, DateTime? end}) {
     DateTime? newStart = start ?? state.startDate;
     DateTime? newEnd = end ?? state.endDate;
@@ -108,15 +114,12 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
   }
 
   // ==========================================
-  // 🟢 附件处理模块 (已分为图片与文档)
+  // 附件处理模块
   // ==========================================
-
-  /// 方法 1：从相册选取图片 (适用于病假单拍照等)
   Future<void> pickImageAttachment() async {
     try {
       final XFile? pickedImage = await _picker.pickImage(source: ImageSource.gallery);
       if (pickedImage != null) {
-        // 🟢 将 XFile 巧妙转换为 PlatformFile，保持后续逻辑与 UI 零修改
         final platformFile = PlatformFile(
           name: pickedImage.name,
           path: pickedImage.path,
@@ -130,12 +133,11 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
     }
   }
 
-  /// 方法 2：使用系统的文件选择器选取文档 (适用于 PDF 报告等)
   Future<void> pickFileAttachment() async {
     try {
       FilePickerResult? result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['pdf', 'doc', 'docx'], // 限制为文档格式
+        allowedExtensions: ['pdf', 'doc', 'docx'], 
       );
 
       if (result != null) {
@@ -154,7 +156,6 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
   // ==========================================
   // 业务逻辑模块
   // ==========================================
-
   int calculateWorkingDays(DateTime? start, DateTime? end) {
     if (start == null || end == null) return 0;
     int days = 0;
@@ -198,7 +199,7 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
       }
     } catch (e) {
       debugPrint("Error fetching balance: $e");
-      state = state.copyWith(balanceLoaded: true); // 避免卡在loading
+      state = state.copyWith(balanceLoaded: true); 
     }
   }
 
@@ -236,21 +237,31 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
       return;
     }
 
-    int days = calculateWorkingDays(state.startDate, state.endDate);
-    if (days <= 0) {
+    int workingDays = calculateWorkingDays(state.startDate, state.endDate);
+    if (workingDays <= 0) {
        state = state.copyWith(errorMessage: "leave.error_no_working_days", clearMessages: true);
        return;
     }
 
+    // 🟢 CHANGED: 半天假计算逻辑
+    double finalDays = workingDays.toDouble();
+    bool isHalfDay = state.leaveDuration != 'Full Day';
+    bool isSingleDay = state.startDate!.isAtSameMomentAs(state.endDate!);
+
+    // 只有在请假为同一天，且选择了半天时，才将天数计算为 0.5
+    if (isHalfDay && isSingleDay) {
+      finalDays = 0.5;
+    }
+
     if (state.leaveTypeKey == 'leave.type_annual') {
       int annualBal = (state.balances['annual'] is int) ? state.balances['annual'] : 0;
-      if (annualBal < days) {
+      if (annualBal < finalDays) {
         state = state.copyWith(errorMessage: "leave.error_insufficient", clearMessages: true); 
         return;
       }
     } else if (state.leaveTypeKey == 'leave.type_medical') {
       int medicalBal = (state.balances['medical'] is int) ? state.balances['medical'] : 0;
-      if (medicalBal < days) {
+      if (medicalBal < finalDays) {
         state = state.copyWith(errorMessage: "leave.error_insufficient", clearMessages: true);
         return;
       }
@@ -315,7 +326,8 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
         'type': _getStandardEnglishType(state.leaveTypeKey),
         'startDate': DateFormat('yyyy-MM-dd').format(state.startDate!),
         'endDate': DateFormat('yyyy-MM-dd').format(state.endDate!),
-        'days': days, 
+        'days': finalDays, // 🟢 CHANGED: 存入 0.5 或具体的整数
+        'duration': state.leaveDuration, // 🟢 CHANGED: 存入具体的半天标识 ('Full Day', 'Half Day (AM)', 'Half Day (PM)')
         'reason': reasonText,
         'status': 'Pending',
         'appliedAt': FieldValue.serverTimestamp(),
@@ -342,7 +354,6 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
   }
 }
 
-// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
 final leaveApplicationProvider = NotifierProvider.autoDispose<LeaveApplicationNotifier, LeaveApplicationState>(() {
   return LeaveApplicationNotifier();
 });

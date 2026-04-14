@@ -62,7 +62,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
     }
   }
 
-  // 🟢 新增：弹出底部菜单卡，让用户选择是上传图片还是 PDF
   void _showAttachmentSourceDialog(BuildContext context, WidgetRef ref) {
     showModalBottomSheet(
       context: context,
@@ -85,7 +84,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
               subtitle: const Text("From Gallery or Camera", style: TextStyle(fontSize: 12)),
               onTap: () {
                 Navigator.pop(ctx);
-                // 🟢 调用新方法 1：图片处理
                 ref.read(leaveApplicationProvider.notifier).pickImageAttachment();
               },
             ),
@@ -95,7 +93,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
               subtitle: const Text("From Files / Local Storage", style: TextStyle(fontSize: 12)),
               onTap: () {
                 Navigator.pop(ctx);
-                // 🟢 调用新方法 2：文档处理
                 ref.read(leaveApplicationProvider.notifier).pickFileAttachment();
               },
             ),
@@ -110,10 +107,8 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
   Widget build(BuildContext context) {
     final state = ref.watch(leaveApplicationProvider);
 
-    // 🟢 监听 Controller 发出的弹窗消息
     ref.listen<LeaveApplicationState>(leaveApplicationProvider, (previous, next) {
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
-        // 针对带参数的特殊翻译进行处理
         String msg = next.errorMessage!;
         if (msg == 'leave.error_insufficient') {
            int days = ref.read(leaveApplicationProvider.notifier).calculateWorkingDays(next.startDate, next.endDate);
@@ -129,7 +124,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
       if (next.successMessage != null && next.successMessage != previous?.successMessage) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next.successMessage!.tr()), backgroundColor: Colors.green));
         _reasonController.clear();
-        // 自动切换到历史记录 Tab
         DefaultTabController.of(context).animateTo(1);
         ref.read(leaveApplicationProvider.notifier).clearMessages();
       }
@@ -159,6 +153,12 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
     if (state.selectedFile != null) {
       final ext = state.selectedFile!.extension?.toLowerCase();
       isImage = ['jpg', 'jpeg', 'png'].contains(ext);
+    }
+
+    // 🟢 判断是否为同一天，如果是则允许半天假
+    bool isSingleDay = false;
+    if (state.startDate != null && state.endDate != null) {
+      isSingleDay = state.startDate!.isAtSameMomentAs(state.endDate!);
     }
 
     return SingleChildScrollView(
@@ -213,13 +213,47 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
             ),
             const SizedBox(height: 16),
 
-            if (state.startDate != null && state.endDate != null)
+            // 🟢 新增：仅在选中同日期时弹出半天选项
+            if (isSingleDay)
               Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Text(
-                  "leave.calculated_days".tr(args: [ref.read(leaveApplicationProvider.notifier).calculateWorkingDays(state.startDate, state.endDate).toString()]), 
-                  style: TextStyle(color: Colors.grey[700], fontStyle: FontStyle.italic, fontSize: 13)
+                padding: const EdgeInsets.only(bottom: 16.0),
+                child: DropdownButtonFormField<String>(
+                  initialValue: state.leaveDuration,
+                  decoration: const InputDecoration(
+                    labelText: 'Duration (请假时长)',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'Full Day', child: Text('Full Day (全天)')),
+                    DropdownMenuItem(value: 'Half Day (AM)', child: Text('Half Day AM (上午)')),
+                    DropdownMenuItem(value: 'Half Day (PM)', child: Text('Half Day PM (下午)')),
+                  ],
+                  onChanged: (value) {
+                    if (value != null) {
+                      ref.read(leaveApplicationProvider.notifier).setLeaveDuration(value);
+                    }
+                  },
                 ),
+              ),
+
+            if (state.startDate != null && state.endDate != null)
+              Builder(
+                builder: (context) {
+                  // 🟢 新增：动态展示计算出的请假天数，便于用户核对
+                  int workingDays = ref.read(leaveApplicationProvider.notifier).calculateWorkingDays(state.startDate, state.endDate);
+                  double displayDays = workingDays.toDouble();
+                  if (isSingleDay && state.leaveDuration != 'Full Day') {
+                    displayDays = 0.5;
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Text(
+                      "leave.calculated_days".tr(args: [displayDays.toString()]), 
+                      style: TextStyle(color: Colors.grey[700], fontStyle: FontStyle.italic, fontSize: 13)
+                    ),
+                  );
+                }
               ),
 
             TextFormField(
@@ -251,7 +285,6 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
                     const SizedBox(height: 12),
                     
                     InkWell(
-                      // 🟢 修复错误：调用底部菜单弹窗，而非旧方法
                       onTap: () => _showAttachmentSourceDialog(context, ref),
                       child: Container(
                         width: double.infinity,
@@ -404,6 +437,12 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
             
             final typeDb = data['type'] ?? 'Leave';
             final typeDisplay = _getLocalizedTypeFromDb(typeDb);
+            
+            // 🟢 新增：读取 duration 并展示出来（如果是半天假）
+            final String? durationDb = data['duration'];
+            final String durationDisplay = (durationDb != null && durationDb != 'Full Day') 
+                ? ' (${durationDb.replaceAll('Half Day ', '')})' // 仅显示 (AM) 或 (PM)
+                : '';
 
             final sDate = data['startDate'] ?? '';
             final eDate = data['endDate'] ?? '';
@@ -437,7 +476,8 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
                       children: [
                         Row(
                           children: [
-                            Text(typeDisplay, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                            // 🟢 标题处加入 AM 或 PM 的提示
+                            Text("$typeDisplay$durationDisplay", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
                             if (hasAttachment)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8.0),
@@ -465,6 +505,7 @@ class _LeaveApplicationScreenState extends ConsumerState<LeaveApplicationScreen>
                       children: [
                         const Icon(Icons.calendar_today, size: 14, color: Colors.grey),
                         const SizedBox(width: 4),
+                        // 如果选了 0.5，这边的 days 会直接显示 0.5
                         Text("$sDate to $eDate ($days ${'leave.unit_days'.tr()})", style: const TextStyle(color: Colors.black87)),
                       ],
                     ),
