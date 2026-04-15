@@ -484,6 +484,31 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
     state = state.copyWith(clearMessages: true);
   }
 
+  // 👇 ================= 新增：获取网络调试信息 ================= 👇
+  Future<Map<String, String>> getNetworkDebugInfo() async {
+    final info = NetworkInfo();
+    String? wifiName;
+    String? wifiIP;
+
+    try {
+      wifiName = await info.getWifiName();
+    } catch (e) {
+      wifiName = 'Exception: $e';
+    }
+
+    try {
+      wifiIP = await info.getWifiIP();
+    } catch (e) {
+      wifiIP = 'Exception: $e';
+    }
+
+    return {
+      'ssid': wifiName ?? '<unknown> or null',
+      'ip': wifiIP ?? 'null',
+    };
+  }
+  // 👆 ======================================================== 👆
+
   Future<void> submitAttendance() async {
     if (state.capturedPhoto == null || state.isProcessingAction) return;
 

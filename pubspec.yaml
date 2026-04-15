@@ -1,7 +1,7 @@
 name: field_track_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.1.3+14
+version: 1.1.4+15
 
 environment:
   # 建议调高至 3.2.0 以上，以匹配较新的插件版本

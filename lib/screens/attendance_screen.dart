@@ -527,17 +527,80 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
     
     if (!mounted) return;
     
+    // 👇 ================= 核心修改：验证失败时的隐藏 Debug 弹窗 ================= 👇
     if (error != null) {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text("Access Denied"), 
-          content: Text(error),
-          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("OK"))],
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.orange),
+              SizedBox(width: 8),
+              Text("Access Denied"),
+            ],
+          ),
+          // 使用 GestureDetector 捕捉长按事件
+          content: GestureDetector(
+            onLongPress: () async {
+              // 触发长按后，获取网络信息
+              final debugInfo = await ref.read(attendanceProvider.notifier).getNetworkDebugInfo();
+              if (!ctx.mounted) return;
+              
+              // 弹出隐藏的 Debug 窗口
+              showDialog(
+                context: ctx,
+                builder: (debugCtx) => AlertDialog(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  title: const Text('🕵️ Network Debug Info', style: TextStyle(color: Colors.red, fontSize: 18)),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('SSID: ${debugInfo['ssid']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 8),
+                      Text('BSSID: ${debugInfo['bssid']}', style: const TextStyle(fontWeight: FontWeight.bold)), // 新增 BSSID
+                      const SizedBox(height: 8),
+                      Text('IP: ${debugInfo['ip']}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 16),
+                      const Text('Please screenshot this and send to Admin.', 
+                        style: TextStyle(fontSize: 12, color: Colors.grey)),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(
+                      child: const Text('Close'),
+                      onPressed: () => Navigator.of(debugCtx).pop(),
+                    ),
+                  ],
+                ),
+              );
+            },
+            // 错误提示内容
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(error, style: const TextStyle(height: 1.4)),
+                const SizedBox(height: 16),
+                const Text(
+                  "(Long press this message for debug info)",
+                  style: TextStyle(fontSize: 11, color: Colors.grey, fontStyle: FontStyle.italic),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx), 
+              child: const Text("OK")
+            )
+          ],
         ),
       );
       return; 
     }
+    // 👆 ========================================================== 👆
 
     if (state.referenceFaceIdPath == null) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("att.err_no_face_id".tr())));
