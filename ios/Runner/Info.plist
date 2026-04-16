@@ -78,8 +78,8 @@
     <key>CADisableMinimumFrameDurationOnPhone</key>
     <true/>
     <key>UIApplicationSupportsIndirectInputEvents</key>
-    <key>NSMotionUsageDescription</key>
-        <string>This app needs access to motion data to optimize battery usage by pausing GPS when you are stationary.</string>
     <true/>
+    <key>NSMotionUsageDescription</key>
+    <string>This app needs access to motion data to optimize battery usage by pausing GPS when you are stationary.</string>
 </dict>
 </plist>

@@ -1,7 +1,7 @@
 name: field_track_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.1.4+15
+version: 1.1.3+14
 
 environment:
   # 建议调高至 3.2.0 以上，以匹配较新的插件版本
@@ -44,7 +44,8 @@ dependencies:
   # Camera and Assets
   camera: ^0.11.0+1
   image_picker: ^1.1.0
-  google_mlkit_face_detection: ^0.11.0
+  google_mlkit_commons: ^0.11.1
+  google_mlkit_face_detection: ^0.13.2
   tflite_flutter: ^0.11.0
   image: ^4.5.4
 
