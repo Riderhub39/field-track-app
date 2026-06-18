@@ -79,9 +79,9 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
   Timer? _timer;
 
   // EmailJS 配置
-  final String _serviceId = 'service_p0fxt7y';
-  final String _templateId = 'template_njjb31f'; 
-  final String _userId = 'yTP2W2IzGSKqHDqWa';
+  final String _serviceId = 'service_hxpxpji';
+  final String _templateId = 'template_xbyycfv'; 
+  final String _userId = 'cAFMGx8vJypXWEBAX';
 
   // 🔴 CHANGED: 使用 build 方法初始化并注册清理器
   @override
