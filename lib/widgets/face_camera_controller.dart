@@ -524,11 +524,20 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
       }
     }
 
-    if (convertedImage != null) {
+   if (convertedImage != null) {
       if (sensorOrientation != 0) {
-        // 🟢 恢复为正向顺时针旋转：之前的负数导致了照片倒立
-        convertedImage = img.copyRotate(convertedImage, angle: sensorOrientation);
+        // 🟢 绝对修复：直接计算旋转角度，无需额外变量，消除 unused_local_variable 警告
+        int rotationAngle = sensorOrientation;
+        
+        if (Platform.isIOS) {
+          // iOS 前置摄像头在图像流中通常是横着的，强制旋转 270 度 (逆时针 90 度) 摆正
+          rotationAngle = 270; 
+        }
+        
+        convertedImage = img.copyRotate(convertedImage, angle: rotationAngle);
       }
+      
+      // iOS 前置摄像头通常需要镜像翻转，否则你是看着镜子里的自己
       if (isFrontCamera) {
         convertedImage = img.flipHorizontal(convertedImage);
       }
