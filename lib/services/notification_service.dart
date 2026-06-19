@@ -24,8 +24,6 @@ class NotificationService {
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance; 
 
   static const int _trackingId = 888;
-  // 删除了 shiftStartId 因为不再需要
-
   static const String _trackingChannelId = 'tracking_channel';
   static const String _statusChannelId = 'status_updates'; 
   static const String _geofenceChannelId = 'geofence_channel'; 
@@ -63,25 +61,35 @@ class NotificationService {
       );
       
       // ========================================
-      // 🟢 修改：仅在 Android 平台调用 Android 特有的权限请求
+      // 🟢 修复1：针对 iOS 额外请求权限并强制开启前台弹窗
       // ========================================
       if (Platform.isAndroid) {
         final AndroidFlutterLocalNotificationsPlugin? androidImplementation =
             _notificationsPlugin.resolvePlatformSpecificImplementation<
                 AndroidFlutterLocalNotificationsPlugin>();
         await androidImplementation?.requestNotificationsPermission();
+      } else if (Platform.isIOS) {
+        final IOSFlutterLocalNotificationsPlugin? iosImplementation = 
+            _notificationsPlugin.resolvePlatformSpecificImplementation<
+                IOSFlutterLocalNotificationsPlugin>();
+        await iosImplementation?.requestPermissions(alert: true, badge: true, sound: true);
+        
+        // 强制 Firebase 推送在 iOS 前台时也能悬浮弹出
+        await _firebaseMessaging.setForegroundNotificationPresentationOptions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
       }
 
       // ========================================
       // FCM Initialization
       // ========================================
-      
       NotificationSettings fcmSettings = await _firebaseMessaging.requestPermission(
         alert: true, badge: true, sound: true, provisional: false,
       );
       debugPrint('User granted permission: ${fcmSettings.authorizationStatus}');
 
-      
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         debugPrint('Got a message whilst in the foreground!');
         if (message.notification != null) {
@@ -103,6 +111,20 @@ class NotificationService {
 
   Future<void> bindFCMToken(String uid) async {
     try {
+      // 🟢 修复2：iOS 必须等待苹果返回 APNS Token 后，才能向 Firebase 请求 Token
+      if (Platform.isIOS) {
+        String? apnsToken = await _firebaseMessaging.getAPNSToken();
+        if (apnsToken == null) {
+          debugPrint("Waiting for APNS token...");
+          // 给系统一点时间去注册 APNS
+          await Future.delayed(const Duration(seconds: 3));
+          apnsToken = await _firebaseMessaging.getAPNSToken();
+          if (apnsToken == null) {
+            debugPrint("❌ APNS token still null. Ensure Push Notifications are enabled in Xcode.");
+          }
+        }
+      }
+
       String? token = await _firebaseMessaging.getToken();
       if (token == null) return;
       
@@ -218,7 +240,6 @@ class NotificationService {
   Future<void> showTrackingNotification() async {
     if (!await _canShowNotification()) return;
 
-    // 🟢 修改：iOS 系统自身会显示蓝条，无需在此额外弹出常驻通知栏
     if (Platform.isIOS) {
       return; 
     }
@@ -254,10 +275,7 @@ class NotificationService {
   // 🏢 Geofence Alert (Smart Reminders)
   // =========================================================
 
-  // 🟢 彻底移除普通进出围栏的提示
-  Future<void> showGeofenceAlert(String title, String body) async {
-    // Function kept empty intentionally to prevent errors if called elsewhere
-  }
+  Future<void> showGeofenceAlert(String title, String body) async {}
 
   Future<void> showForgotClockOutAlert() async {
     if (!await _canShowNotification()) return;
@@ -301,7 +319,15 @@ class NotificationService {
       enableVibration: true,
     );
 
-    const NotificationDetails details = NotificationDetails(android: androidDetails, iOS: DarwinNotificationDetails());
+    // 🟢 修复3：强制为 iOS 配置 `presentAlert: true`，否则前台依然会被吞噬
+    const NotificationDetails details = NotificationDetails(
+      android: androidDetails, 
+      iOS: DarwinNotificationDetails(
+        presentAlert: true, 
+        presentBadge: true, 
+        presentSound: true,
+      )
+    );
     
     int notificationId = DateTime.now().millisecondsSinceEpoch ~/ 1000;
 
@@ -313,15 +339,7 @@ class NotificationService {
     );
   }
 
-  // =========================================================
-  // ⏰ Shift Reminders (Scheduled) - 🟢 已清空所有定时逻辑
-  // =========================================================
+  Future<void> scheduleShiftReminders(DateTime shiftStart, DateTime shiftEnd) async {}
 
-  Future<void> scheduleShiftReminders(DateTime shiftStart, DateTime shiftEnd) async {
-    // 🟢 这里不再放置任何逻辑，保持为空以防外部调用报错
-  }
-
-  Future<void> cancelAllReminders() async {
-    // 🟢 清空
-  }
+  Future<void> cancelAllReminders() async {}
 }
