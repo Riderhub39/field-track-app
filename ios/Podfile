@@ -43,7 +43,8 @@ post_install do |installer|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.5'
       
       # 2. 核心：在模拟器中完全排除 arm64 架构以兼容 Intel 插件
-      config.build_settings["EXCLUDED_ARCHS[sdk=iphonesimulator*]"] = "arm64"
+      # 🚨 【修复点】已经将下面这行注释掉。不再排除 arm64，确保您的代码能在 Mac Mini 和真机上顺利编译
+      # config.build_settings["EXCLUDED_ARCHS[sdk=iphonesimulator*]"] = "arm64"
       
       # 3. 解决 "Unable to resolve module" 错误，确保搜索路径正确
       config.build_settings['ONLY_ACTIVE_ARCH'] = 'NO'

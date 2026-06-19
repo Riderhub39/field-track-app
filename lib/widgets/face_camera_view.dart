@@ -28,8 +28,11 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // 初始化参考底图与特征值
-    ref.read(faceCameraProvider.notifier).prepareReference(widget.referencePath);
+    // 🟢 修复1：延迟执行，防止在 widget building 阶段修改状态报错
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(faceCameraProvider.notifier).prepareReference(widget.referencePath);
+    });
+    
     _initializeCamera();
   }
 
@@ -85,6 +88,8 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
       setState(() => _isInitialized = true);
       
       _controller!.startImageStream((image) {
+        // 🟢 修复2：防止页面关闭后仍调用 ref 导致 disposed 崩溃
+        if (!mounted) return; 
         ref.read(faceCameraProvider.notifier).processImage(image, _controller!);
       });
     } catch (e) {
@@ -228,7 +233,6 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  // 🟢 去掉 step 1，只有没扫到(0)和验证中(2)两种颜色
                   color: state.step == 0 ? Colors.white : Colors.blueAccent, 
                   width: 4
                 ),
@@ -236,7 +240,6 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
             ),
           ),
 
-          // 🟢 仅保留环境/灯光的 3 秒超时提示
           if (state.showHelpTips && !state.isVerifying)
             Positioned(
               top: size.height * 0.05,
@@ -273,7 +276,6 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
             left: 20, right: 20,
             child: Column(
               children: [
-                // 🟢 彻底去除了原本 step == 1 时的箭头和笑脸图标
                 Text(
                   state.statusText,
                   textAlign: TextAlign.center,

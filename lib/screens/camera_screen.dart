@@ -1,7 +1,7 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:permission_handler/permission_handler.dart'; 
+// 🟢 修复1：彻底删除了 package:permission_handler/permission_handler.dart 的引入
 import 'camera_controller.dart'; 
 
 class CameraScreen extends ConsumerStatefulWidget {
@@ -46,15 +46,16 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
     super.dispose();
   }
 
+  // 🟢 修复2：去除了多余的 Permission.camera.request()，依靠底层 camera 插件自动申请
   Future<void> _initHardwareCamera() async {
     try {
-      var status = await Permission.camera.request();
-      if (!status.isGranted) throw Exception("Camera permission is denied. Please enable it in settings.");
       final cameras = await availableCameras();
       if (cameras.isEmpty) throw Exception("No cameras found on this device.");
 
       final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
       _cameraController = CameraController(backCamera, ResolutionPreset.high, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
+      
+      // initialize() 本身就会去向 iOS 系统请求相机权限
       await _cameraController!.initialize();
     } catch (e) {
       rethrow; 
@@ -77,7 +78,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
     final state = ref.watch(cameraScreenProvider);
 
     ref.listen<CameraScreenState>(cameraScreenProvider, (previous, next) {
-      // 🟢 移除了 "📸 Added to preview list" 弹窗提示，仅保留错误提示
       if (next.errorMessage != null && next.errorMessage != previous?.errorMessage) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: ${next.errorMessage}"), backgroundColor: Colors.red));
       }

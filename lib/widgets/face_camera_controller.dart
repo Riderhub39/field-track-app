@@ -383,9 +383,6 @@ final faceCameraProvider = NotifierProvider.autoDispose<FaceCameraNotifier, Face
 // ==========================================
 // 3. 后台图像处理 Isolate 函数 (必须放在类外顶层)
 // ==========================================
-// ==========================================
-// 3. 后台图像处理 Isolate 函数 (必须放在类外顶层)
-// ==========================================
 Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
   try {
     final int width = data['width'];
@@ -398,7 +395,7 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
 
     img.Image? convertedImage;
 
-    // 🟢 兼容 nv21 和 yuv420
+    // 🟢 兼容 nv21 和 yuv420 (Android 原有逻辑，完全保持不变)
     if (format == 'yuv420' || format == 'nv21') {
       convertedImage = img.Image(width: width, height: height);
       
@@ -490,13 +487,26 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
         }
       }
     } else if (format == 'bgra8888') {
-       final Uint8List bytes = planes[0]['bytes'];
-       convertedImage = img.Image.fromBytes(
-         width: width,
-         height: height,
-         bytes: bytes.buffer,
-         order: img.ChannelOrder.bgra,
-       );
+      // 🍎 iOS BGRA8888 完美解析方案：手动根据 bytesPerRow 剥离 Padding
+      final Uint8List bytes = planes[0]['bytes'];
+      final int bytesPerRow = planes[0]['bytesPerRow'] ?? (width * 4);
+
+      convertedImage = img.Image(width: width, height: height);
+
+      for (int y = 0; y < height; y++) {
+        int rowOffset = y * bytesPerRow; // 核心：按真实的内存行宽计算偏移
+        for (int x = 0; x < width; x++) {
+          int pixelOffset = rowOffset + x * 4;
+          // 防越界保护
+          if (pixelOffset + 3 < bytes.length) {
+            int b = bytes[pixelOffset];
+            int g = bytes[pixelOffset + 1];
+            int r = bytes[pixelOffset + 2];
+            // 抛弃 Alpha 通道，直接存入 RGB
+            convertedImage.setPixelRgb(x, y, r, g, b);
+          }
+        }
+      }
     }
 
     if (convertedImage != null) {

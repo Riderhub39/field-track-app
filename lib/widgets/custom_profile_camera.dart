@@ -29,8 +29,11 @@ class _CustomProfileCameraState extends ConsumerState<CustomProfileCamera> with 
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     
-    // 初始化参考底图
-    ref.read(profileCameraProvider.notifier).prepareReference(widget.referencePath);
+    // 🟢 修复1：使用 addPostFrameCallback 延迟执行，防止 building 阶段修改状态报错
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(profileCameraProvider.notifier).prepareReference(widget.referencePath);
+    });
+    
     _initializeCamera();
   }
 
@@ -76,6 +79,7 @@ class _CustomProfileCameraState extends ConsumerState<CustomProfileCamera> with 
       
       // 视频流丢给 Controller 处理
       await _controller!.startImageStream((image) {
+        if (!mounted) return; // 🟢 修复2：防止页面关闭后仍调用 ref
         ref.read(profileCameraProvider.notifier).processImage(image, _controller!);
       });
     } catch (e) {
@@ -131,7 +135,10 @@ class _CustomProfileCameraState extends ConsumerState<CustomProfileCamera> with 
               Navigator.pop(context);
               ref.read(profileCameraProvider.notifier).resetCameraState();
               if (_controller != null && !_controller!.value.isStreamingImages) {
-                 await _controller!.startImageStream((image) => ref.read(profileCameraProvider.notifier).processImage(image, _controller!));
+                 await _controller!.startImageStream((image) {
+                   if (!mounted) return; // 🟢 修复2：防止弹窗重试时报错
+                   ref.read(profileCameraProvider.notifier).processImage(image, _controller!);
+                 });
               }
             },
             child: const Text('Retake', style: TextStyle(color: Colors.grey)),
@@ -162,7 +169,10 @@ class _CustomProfileCameraState extends ConsumerState<CustomProfileCamera> with 
               Navigator.pop(context);
               ref.read(profileCameraProvider.notifier).resetCameraState();
               if (_controller != null && !_controller!.value.isStreamingImages) {
-                 await _controller!.startImageStream((image) => ref.read(profileCameraProvider.notifier).processImage(image, _controller!));
+                 await _controller!.startImageStream((image) {
+                   if (!mounted) return; // 🟢 修复2：防止弹窗重试时报错
+                   ref.read(profileCameraProvider.notifier).processImage(image, _controller!);
+                 });
               }
             },
             child: const Text('Retry'),
@@ -310,4 +320,4 @@ class _CustomProfileCameraState extends ConsumerState<CustomProfileCamera> with 
       ),
     );
   }
-} 
+}
