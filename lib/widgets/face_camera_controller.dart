@@ -531,7 +531,8 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
         
         if (Platform.isIOS) {
           // iOS 前置摄像头在图像流中通常是横着的，强制旋转 270 度 (逆时针 90 度) 摆正
-          rotationAngle = 180; 
+          rotationAngle = 0
+          ; 
         }
         
         convertedImage = img.copyRotate(convertedImage, angle: rotationAngle);
