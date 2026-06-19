@@ -1,7 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-// 🟢 修复1：彻底删除了 package:permission_handler/permission_handler.dart 的引入
 import 'camera_controller.dart'; 
 
 class CameraScreen extends ConsumerStatefulWidget {
@@ -46,7 +45,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
     super.dispose();
   }
 
-  // 🟢 修复2：去除了多余的 Permission.camera.request()，依靠底层 camera 插件自动申请
   Future<void> _initHardwareCamera() async {
     try {
       final cameras = await availableCameras();
@@ -55,7 +53,6 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
       final backCamera = cameras.firstWhere((c) => c.lensDirection == CameraLensDirection.back, orElse: () => cameras.first);
       _cameraController = CameraController(backCamera, ResolutionPreset.high, enableAudio: false, imageFormatGroup: ImageFormatGroup.jpeg);
       
-      // initialize() 本身就会去向 iOS 系统请求相机权限
       await _cameraController!.initialize();
     } catch (e) {
       rethrow; 
@@ -98,7 +95,20 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
           future: _initializeControllerFuture,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
-              return Center(child: Text("Camera Error:\n${snapshot.error}", style: const TextStyle(color: Colors.white), textAlign: TextAlign.center));
+              return Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text("Camera Error:\n${snapshot.error}", style: const TextStyle(color: Colors.white), textAlign: TextAlign.center),
+                    const SizedBox(height: 20),
+                    // 🟢 即使出错也给用户一个退出的按钮
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(context, state.capturedImages),
+                      child: const Text('Go Back'),
+                    )
+                  ],
+                ),
+              );
             }
 
             if (snapshot.connectionState == ConnectionState.done && _cameraController != null && _cameraController!.value.isInitialized) {
@@ -110,6 +120,23 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
                       children: [
                         ClipRect(child: Container(color: Colors.black, child: Center(child: CameraPreview(_cameraController!)))),
                         
+                        // 🟢 新增：左上角的退出(取消)按钮
+                        Positioned(
+                          top: 50, left: 20,
+                          child: GestureDetector(
+                            onTap: () => Navigator.pop(context, state.capturedImages),
+                            child: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: const BoxDecoration(
+                                color: Colors.black54, // 半透明黑底
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(Icons.close, color: Colors.white, size: 28),
+                            ),
+                          ),
+                        ),
+
+                        // 右上角的 Done (完成) 按钮
                         Positioned(
                           top: 50, right: 20, 
                           child: GestureDetector(
@@ -136,6 +163,7 @@ class _CameraScreenState extends ConsumerState<CameraScreen> with WidgetsBinding
                           )
                         ),
 
+                        // 右下角的水印预览
                         Positioned(
                           bottom: 20, right: 15, left: 15, 
                           child: Column(

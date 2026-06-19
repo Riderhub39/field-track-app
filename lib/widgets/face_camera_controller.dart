@@ -511,7 +511,13 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
 
     if (convertedImage != null) {
       if (sensorOrientation != 0) {
-        convertedImage = img.copyRotate(convertedImage, angle: sensorOrientation);
+        // 🟢 核心修复：解决 iOS 照片倒立导致找不到人脸的问题
+        int angle = sensorOrientation;
+        if (format == 'bgra8888') {
+          // iOS 系统的底层矩阵方向与安卓相反，必须用负数（逆时针）才能摆正
+          angle = -sensorOrientation; 
+        }
+        convertedImage = img.copyRotate(convertedImage, angle: angle);
       }
       if (isFrontCamera) {
         convertedImage = img.flipHorizontal(convertedImage);
