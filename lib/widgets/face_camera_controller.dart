@@ -25,6 +25,7 @@ class FaceCameraState {
   final bool showFailureDialog;   
   final String? errorMessage;     
   final bool showHelpTips; 
+  final double? matchDistance; // 🟢 新增：用于记录 iOS 的比对分数
 
   FaceCameraState({
     this.statusText = "Initializing...",
@@ -38,6 +39,7 @@ class FaceCameraState {
     this.showFailureDialog = false,
     this.errorMessage, 
     this.showHelpTips = false, 
+    this.matchDistance, // 🟢 新增
   });
 
   FaceCameraState copyWith({
@@ -53,6 +55,7 @@ class FaceCameraState {
     String? errorMessage, 
     bool clearErrorMessage = false,
     bool? showHelpTips, 
+    double? matchDistance, // 🟢 新增
   }) {
     return FaceCameraState(
       statusText: statusText ?? this.statusText,
@@ -66,6 +69,7 @@ class FaceCameraState {
       showFailureDialog: showFailureDialog ?? this.showFailureDialog,
       errorMessage: clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       showHelpTips: showHelpTips ?? this.showHelpTips,
+      matchDistance: matchDistance ?? this.matchDistance, // 🟢 新增
     );
   }
 }
@@ -193,15 +197,20 @@ class FaceCameraNotifier extends AutoDisposeNotifier<FaceCameraState> {
         // 使用真实的宽高做居中判断
         bool isCentered = _isFaceCentered(face, actualWidth, actualHeight);
         
+        // 🟢 针对 iOS 放宽抓取条件（Android 保持原样限制）
+        double minRatio = Platform.isIOS ? 0.15 : 0.25;
+        double maxRatio = Platform.isIOS ? 0.85 : 0.75;
+        double angleTolerance = Platform.isIOS ? 25.0 : 15.0; // iOS 允许 ±25 度的脸部倾斜
+
         if (!isCentered) {
           if (!state.hasCaptured) {
             _updateUI(status: 'Center your face', color: Colors.orange, step: 0);
           }
         } 
-        else if (faceRatio < 0.25) {
+        else if (faceRatio < minRatio) {
           _updateUI(status: 'Move closer', color: Colors.orange, step: 0);
         } 
-        else if (faceRatio > 0.75) {
+        else if (faceRatio > maxRatio) {
           _updateUI(status: 'Move further', color: Colors.orange, step: 0);
         } 
         else {
@@ -212,8 +221,8 @@ class FaceCameraNotifier extends AutoDisposeNotifier<FaceCameraState> {
 
           // 🟢 精简逻辑：只要脸在框内且没有过度歪头，直接抓拍并验证！
           if (state.step == 0 && !state.hasCaptured) {
-            // 放宽判断，允许头部有轻微的倾斜（±15度以内都算合格）
-            if (yaw > -15 && yaw < 15 && pitch > -15 && pitch < 15) { 
+            // 使用上面定义的 angleTolerance (iOS ±25度，Android ±15度)
+            if (yaw > -angleTolerance && yaw < angleTolerance && pitch > -angleTolerance && pitch < angleTolerance) { 
                await _captureAndVerify(image, controller); 
             } else {
                _updateUI(status: "Look straight", color: Colors.yellowAccent, step: 0);
@@ -332,14 +341,20 @@ class FaceCameraNotifier extends AutoDisposeNotifier<FaceCameraState> {
         // 进行人脸比对
         VerifyResult result = await _faceService.compareFacesDetailed(_referencePath!, capturedImage);
 
+        // 🟢 尝试获取特征距离分数
+        double? dist;
+        try { dist = (result as dynamic).distance; } catch (_) {}
+
         if (result.verified) {
-          state = state.copyWith(successImage: capturedImage);
+          state = state.copyWith(successImage: capturedImage, matchDistance: dist); // 🟢 记录分数
         } else {
           state = state.copyWith(
             statusText: 'camera.failed'.tr(),
             statusColor: Colors.red,
             showFailureDialog: true,
             isVerifying: false,
+            tempCapturedImage: capturedImage, // 🟢 确保失败时也有照片带回给弹窗
+            matchDistance: dist, // 🟢 记录分数
           );
         }
       } else {
@@ -511,13 +526,8 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
 
     if (convertedImage != null) {
       if (sensorOrientation != 0) {
-        // 🟢 核心修复：解决 iOS 照片倒立导致找不到人脸的问题
-        int angle = sensorOrientation;
-        if (format == 'bgra8888') {
-          // iOS 系统的底层矩阵方向与安卓相反，必须用负数（逆时针）才能摆正
-          angle = -sensorOrientation; 
-        }
-        convertedImage = img.copyRotate(convertedImage, angle: angle);
+        // 🟢 恢复为正向顺时针旋转：之前的负数导致了照片倒立
+        convertedImage = img.copyRotate(convertedImage, angle: sensorOrientation);
       }
       if (isFrontCamera) {
         convertedImage = img.flipHorizontal(convertedImage);

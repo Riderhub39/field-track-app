@@ -143,6 +143,57 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
     );
   }
 
+  // 🟢 新增：仅限 iOS 显示的调试与验证弹窗
+  void _showIOSDebugDialog(XFile? image, bool isSuccess, double? distance) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(isSuccess ? '✅ Success (iOS)' : '❌ Failed (iOS)'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (image != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.file(File(image.path), height: 200, fit: BoxFit.cover),
+              ),
+            const SizedBox(height: 10),
+            Text(
+              isSuccess ? "Face matched! 打卡成功" : "Face mismatch! 不匹配",
+              style: TextStyle(fontWeight: FontWeight.bold, color: isSuccess ? Colors.green : Colors.red),
+            ),
+            if (distance != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8.0),
+                child: Text("Euclidean Distance: ${distance.toStringAsFixed(4)}\n(通常 < 1.0 为成功)", textAlign: TextAlign.center),
+              ),
+          ],
+        ),
+        actions: [
+          if (!isSuccess)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context); // 关闭 dialog
+                ref.read(faceCameraProvider.notifier).resetCameraState(_controller); // 重试
+              },
+              child: const Text('Retake (重试)'),
+            ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context); // 关闭 dialog
+              if (isSuccess) {
+                Navigator.pop(context, image); // 成功则直接带回照片并完成打卡
+              } else {
+                Navigator.pop(context, 'failed'); // 彻底退出
+              }
+            },
+            child: const Text('OK'),
+          )
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -153,12 +204,22 @@ class _FaceCameraViewState extends ConsumerState<FaceCameraView> with WidgetsBin
         _showErrorDialog(next.errorMessage!);
       }
       
+      // 🟢 修改失败情况的拦截
       if (next.showFailureDialog && !(previous?.showFailureDialog ?? false)) {
-        _showFailureDialog();
+        if (Platform.isIOS) {
+          _showIOSDebugDialog(next.tempCapturedImage, false, next.matchDistance);
+        } else {
+          _showFailureDialog(); // Android 保持原本的失败弹窗
+        }
       }
       
+      // 🟢 修改成功情况的拦截
       if (next.successImage != null && previous?.successImage == null) {
-        Navigator.pop(context, next.successImage); 
+        if (Platform.isIOS) {
+          _showIOSDebugDialog(next.successImage, true, next.matchDistance);
+        } else {
+          Navigator.pop(context, next.successImage); // Android 保持静默直接关闭并带回数据
+        }
       }
     });
 
