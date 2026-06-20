@@ -43,7 +43,8 @@
     "invalid_otp": "Kod OTP tidak sah",
     "session_expired": "Sesi tamat tempoh. Sila minta OTP baru.",
     "pw_too_short": "Kata laluan mesti sekurang-kurangnya 6 aksara",
-    "pw_mismatch": "Kata laluan tidak sepadan"
+    "pw_mismatch": "Kata laluan tidak sepadan",
+    "error_required": "Diperlukan"
   },
   "home": {
     "app_title": "Papan Pemuka Field Track",
@@ -195,6 +196,7 @@
     "err_no_face_id": "ID Wajah tidak ditemui. Sila tetapkan di Papan Pemuka dahulu.",
     "msg_photo_captured": "Foto diambil untuk {}!",
     "msg_submitted": "{} Berjaya Dihantar!",
+    "msg_queueing": "Memproses {}...",
     "dialog_photo_title": "Foto Diperlukan",
     "dialog_photo_content": "Sila tekan ikon kamera untuk mengambil foto sebelum merekod kehadiran.",
     "btn_ok": "OK",

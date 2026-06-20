@@ -286,7 +286,7 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        state.currentAddress.tr(),
+                        state.currentAddress,
                         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,

@@ -43,7 +43,8 @@
     "invalid_otp": "Invalid OTP Code",
     "session_expired": "Session expired. Please request OTP again.",
     "pw_too_short": "Password must be at least 6 chars",
-    "pw_mismatch": "Passwords do not match"
+    "pw_mismatch": "Passwords do not match",
+    "error_required": "Required"
   },
   "home": {
     "app_title": "Field Track Dashboard",
@@ -195,6 +196,7 @@
     "err_no_face_id": "Face ID not found. Please setup in Dashboard first.",
     "msg_photo_captured": "Photo captured for {}!",
     "msg_submitted": "{} Submitted!",
+    "msg_queueing": "Processing {}...",
     "dialog_photo_title": "Photo Required",
     "dialog_photo_content": "Please tap the camera icon to take a photo before clocking your attendance.",
     "btn_ok": "OK",

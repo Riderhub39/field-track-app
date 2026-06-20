@@ -43,7 +43,8 @@
     "invalid_otp": "验证码无效",
     "session_expired": "会话已过期，请重新请求验证码。",
     "pw_too_short": "密码长度至少为 6 位",
-    "pw_mismatch": "两次输入的密码不一致"
+    "pw_mismatch": "两次输入的密码不一致",
+    "error_required": "必填项"
   },
   "home": {
     "app_title": "Field Track 仪表板",
@@ -196,6 +197,7 @@
     "err_no_face_id": "未找到人脸 ID，请先在仪表板设置。",
     "msg_photo_captured": "已拍摄 {} 照片！",
     "msg_submitted": "{} 提交成功！",
+    "msg_queueing": "正在处理 {}...",
     "dialog_photo_title": "需要照片",
     "dialog_photo_content": "请先点击相机图标拍摄照片，然后再打卡。",
     "btn_ok": "确定",
