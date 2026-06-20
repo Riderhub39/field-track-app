@@ -61,8 +61,11 @@
   },
   "settings": {
     "title": "设置",
+    "header_general": "通用",
+    "header_account": "账户",
     "change_pw": "修改密码",
     "language": "语言设置",
+    "biometric": "生物识别登录",
     "biometric_lock": "生物识别锁",
     "biometric_desc": "每次打开应用时验证身份",
     "biometric_on_msg": "生物识别锁已开启。",

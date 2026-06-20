@@ -60,8 +60,11 @@
   },
   "settings": {
     "title": "Settings",
+    "header_general": "General",
+    "header_account": "Account",
     "change_pw": "Change Password",
     "language": "Language",
+    "biometric": "Face ID / Biometric Login",
     "biometric_lock": "Biometric Lock",
     "biometric_desc": "Verify identity when opening app",
     "biometric_on_msg": "Biometric lock enabled.",

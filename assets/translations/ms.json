@@ -60,8 +60,11 @@
   },
   "settings": {
     "title": "Tetapan",
+    "header_general": "Umum",
+    "header_account": "Akaun",
     "change_pw": "Tukar Kata Laluan",
     "language": "Bahasa",
+    "biometric": "Log Masuk Biometrik",
     "biometric_lock": "Kunci Biometrik",
     "biometric_desc": "Sahkan identiti semasa membuka aplikasi",
     "biometric_on_msg": "Kunci biometrik diaktifkan.",
