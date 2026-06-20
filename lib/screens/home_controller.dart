@@ -107,7 +107,8 @@ class HomeState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-class HomeNotifier extends Notifier<HomeState> {
+// 🟢 修改：将 Notifier 改为 AutoDisposeNotifier，让状态用完即毁
+class HomeNotifier extends AutoDisposeNotifier<HomeState> {
   StreamSubscription? _announcementSubscription;
   StreamSubscription? _userStatusSubscription;
   StreamSubscription<bool>? _kickOutSubscription;
@@ -339,9 +340,6 @@ class HomeNotifier extends Notifier<HomeState> {
   }
 
   // ==========================================
-  // 模块：头像上传 (集成压缩功能)
-  // ==========================================
- // ==========================================
   // 模块：头像上传 (已集成压缩与状态管理)
   // ==========================================
   Future<void> uploadProfilePhoto(XFile photo) async {
@@ -427,8 +425,9 @@ class HomeNotifier extends Notifier<HomeState> {
       );
     }
   }
-  }
+}
 
-final homeProvider = NotifierProvider<HomeNotifier, HomeState>(() {
+// 🟢 修改：在 Provider 中加上 autoDispose，确保返回登录页时清理缓存
+final homeProvider = NotifierProvider.autoDispose<HomeNotifier, HomeState>(() {
   return HomeNotifier();
 });

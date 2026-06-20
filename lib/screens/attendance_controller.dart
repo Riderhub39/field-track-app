@@ -274,7 +274,7 @@ class AttendanceNotifier extends AutoDisposeNotifier<AttendanceState> {
 
     _attendanceSub = FirebaseFirestore.instance
         .collection('attendance')
-        .where('uid', isEqualTo: uid)
+        .where('uid', whereIn: [uid, state.myEmpCode])
         .where('date', isEqualTo: todayStr)
         .where('verificationStatus', whereIn: ['Pending', 'Verified', 'Corrected'])
         .snapshots()

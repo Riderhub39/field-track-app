@@ -665,19 +665,24 @@ class _AttendanceActionTabState extends ConsumerState<AttendanceActionTab> {
 // ==========================================
 //  Tab 2: History
 // ==========================================
-class HistoryTab extends StatefulWidget {
+class HistoryTab extends ConsumerStatefulWidget {
   const HistoryTab({super.key});
   @override
-  State<HistoryTab> createState() => _HistoryTabState();
+  ConsumerState<HistoryTab> createState() => _HistoryTabState();
 }
 
-class _HistoryTabState extends State<HistoryTab> {
+class _HistoryTabState extends ConsumerState<HistoryTab> {
   bool _isDescending = true;
 
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const Center(child: Text("Please login"));
+    final state = ref.watch(attendanceProvider);
+
+    if (user == null || state.isFetchingUser) return const Center(child: CircularProgressIndicator());
+
+    String uid = user.uid;
+    String docId = state.myEmpCode;
 
     return Column(
       children: [
@@ -710,14 +715,14 @@ class _HistoryTabState extends State<HistoryTab> {
         
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
+            // 🟢 修改：使用 whereIn 同时查询手机账号和网页端录入的记录
             stream: FirebaseFirestore.instance.collection('attendance')
-                .where('uid', isEqualTo: user.uid)
+                .where('uid', whereIn: [uid, docId])
                 .orderBy('timestamp', descending: _isDescending)
                 .snapshots(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) return const ShimmerLoadingList();
               
-              // 🟢 核心修改：不再隐藏 Admin 的操作，只隐藏系统自动生成的记录
               final docs = (snapshot.data?.docs ?? []).where((d) {
                 final data = d.data() as Map<String, dynamic>;
                 final addressStr = data['address']?.toString() ?? '';
@@ -740,16 +745,11 @@ class _HistoryTabState extends State<HistoryTab> {
                   String status = data['verificationStatus'] ?? 'Pending';
                   bool isArchived = status == 'Archived';
                   
-                  // 🟢 新增：判断是否为管理员手动添加/修改的记录
-                  final addressStr = data['address']?.toString() ?? '';
-                  bool isAdminEntry = addressStr.contains("Admin Manual") || addressStr.contains("Admin Override") || addressStr.contains("Admin Edit");
-
                   return Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      // 为 Admin 记录添加淡黄色背景作为区分
-                      color: isArchived ? Colors.grey.shade50 : (isAdminEntry ? Colors.amber.shade50 : Colors.white), 
-                      border: Border.all(color: isAdminEntry ? Colors.orange.shade300 : Colors.grey.shade300),
+                      color: isArchived ? Colors.grey.shade50 : Colors.white, 
+                      border: Border.all(color: Colors.grey.shade300),
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Row(
@@ -762,15 +762,6 @@ class _HistoryTabState extends State<HistoryTab> {
                             children: [
                               Text(displayDate, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: isArchived ? Colors.grey : Colors.black54)),
                               Text(displayTime, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isArchived ? Colors.grey : Colors.black87, decoration: isArchived ? TextDecoration.lineThrough : null)), 
-                              
-                              // 🟢 新增：管理员操作标签
-                              if (isAdminEntry)
-                                Container(
-                                  margin: const EdgeInsets.only(top: 4),
-                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                                  decoration: BoxDecoration(color: Colors.orange, borderRadius: BorderRadius.circular(4)),
-                                  child: const Text("BY ADMIN", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: 0.5)),
-                                )
                             ],
                           ),
                         ),
@@ -889,7 +880,7 @@ class _ScheduleTabState extends ConsumerState<ScheduleTab> {
 
                   return StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance.collection('attendance')
-                        .where('uid', isEqualTo: user?.uid)
+                        .where('uid', whereIn: [user?.uid ?? '', state.myEmpCode]) 
                         .where('date', isEqualTo: dateStr)
                         .snapshots(),
                     builder: (context, attSnapshot) {
@@ -1170,7 +1161,7 @@ class _SubmitTabState extends ConsumerState<SubmitTab> {
 
                   return StreamBuilder<QuerySnapshot>(
                     stream: FirebaseFirestore.instance.collection('attendance')
-                        .where('uid', isEqualTo: user?.uid)
+                        .where('uid', whereIn: [user?.uid ?? '', state.myEmpCode])
                         .where('date', isEqualTo: dateStr)
                         .snapshots(),
                     builder: (context, attSnapshot) {
