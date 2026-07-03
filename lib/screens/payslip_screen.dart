@@ -159,7 +159,7 @@ class _PayslipScreenState extends ConsumerState<PayslipScreen> {
           StreamBuilder<QuerySnapshot>(
             stream: FirebaseFirestore.instance
                 .collection('payslips')
-                .where('uid', isEqualTo: profileId)
+                .where('authUid', isEqualTo: authUid)
                 .where('status', isEqualTo: 'Published')
                 .snapshots(),
             builder: (context, snapshot) {
