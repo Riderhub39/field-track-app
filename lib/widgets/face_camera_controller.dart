@@ -526,15 +526,24 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
 
    if (convertedImage != null) {
       if (sensorOrientation != 0) {
-        // 🟢 绝对修复：直接计算旋转角度，无需额外变量，消除 unused_local_variable 警告
-        convertedImage = img.copyRotate(convertedImage, angle: 0);
+        // 1. 先确定需要旋转的角度
+        int angle = sensorOrientation;
+        
+        if (format == 'bgra8888') {
+          // iOS (bgra8888) 的矩阵方向与安卓相反，必须用负数（逆时针）摆正
+          angle = -sensorOrientation; 
+        }
+        
+        // 2. 🟢 核心修复：确保在这里只调用【一次】 copyRotate！
+        convertedImage = img.copyRotate(convertedImage, angle: angle);
       }
       
-      // iOS 前置摄像头通常需要镜像翻转，否则你是看着镜子里的自己
+      // 3. 前置摄像头镜像翻转
       if (isFrontCamera) {
         convertedImage = img.flipHorizontal(convertedImage);
       }
 
+      // 4. 保存图片
       final jpegBytes = img.encodeJpg(convertedImage, quality: 85);
       final file = File(tempPath);
       file.writeAsBytesSync(jpegBytes);
