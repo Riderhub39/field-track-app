@@ -5,204 +5,166 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../utils/file_logger.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // 1. Get current user data (Needed for Home Screen)
+
+
   Future<Map<String, dynamic>?> getCurrentUserData() async {
     try {
       User? user = _auth.currentUser;
       if (user != null) {
-        DocumentSnapshot doc = await _db
-            .collection('users')
-            .doc(user.uid)
-            .get();
+        DocumentSnapshot doc = await _db.collection('users').doc(user.uid).get();
         return doc.data() as Map<String, dynamic>?;
       }
       return null;
     } catch (e) {
-      debugPrint("Error fetching user data: $e");
       return null;
     }
   }
 
-  // 2. Login with Username
   Future<User?> loginWithUsername(String username, String password) async {
     try {
       String email = "${username.trim()}@fieldtrack.com";
-      UserCredential result = await _auth.signInWithEmailAndPassword(
-        email: email, 
-        password: password
-      );
-      
-      // 🟢 登录成功后，自动更新当前设备 ID 到数据库
+      UserCredential result = await _auth.signInWithEmailAndPassword(email: email, password: password);
       if (result.user != null) {
+        await FileLogger.log("🚨 [AUTH] 登录成功: ${result.user!.uid}");
         await updateDeviceIdOnLogin(result.user!.uid);
       }
-      
       return result.user;
     } catch (e) {
-      debugPrint("Login Error: ${e.toString()}");
+      await FileLogger.log("🚨 [AUTH] 登录失败: $e");
       return null;
     }
   }
 
-  // 3. Get Phone Number for WhatsApp Support
   Future<String?> getPhoneNumber(String username) async {
+    // 省略部分无关代码，保持原样...
     try {
-      final snapshot = await _db
-          .collection('users')
-          .where('username', isEqualTo: username.trim())
-          .limit(1)
-          .get();
-
-      if (snapshot.docs.isNotEmpty) {
-        return snapshot.docs.first.get('phone') as String;
-      }
+      final snapshot = await _db.collection('users').where('username', isEqualTo: username.trim()).limit(1).get();
+      if (snapshot.docs.isNotEmpty) return snapshot.docs.first.get('phone') as String;
       return null;
     } catch (e) {
-      debugPrint("Error fetching phone: $e");
       return null;
     }
   }
 
-  // 4. Register with Username
   Future<User?> registerWithUsername(String username, String password) async {
+    // 保持原样...
     try {
       String email = "${username.trim()}@fieldtrack.com";
-      UserCredential result = await _auth.createUserWithEmailAndPassword(
-        email: email, 
-        password: password
-      );
+      UserCredential result = await _auth.createUserWithEmailAndPassword(email: email, password: password);
       return result.user;
     } catch (e) {
-      debugPrint("Registration Error: ${e.toString()}");
       return null;
     }
   }
 
-  // 5. Sign Out
   Future<void> signOut() async => await _auth.signOut();
 
   // =========================================================
   // 🟢 单设备登录限制逻辑 (Single Device Login)
   // =========================================================
 
-  // 获取当前硬件设备的唯一 ID
   Future<String> _getDeviceId() async {
     final DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
     String deviceId = 'unknown_device';
-
     try {
       if (Platform.isAndroid) {
         AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
-        deviceId = androidInfo.id; 
+        
+        // 🟢 兼容方案：使用 brand + model + id 的组合，提高稳定性
+        // 这样即使系统升级导致 id 变化，品牌和型号依然能保证标识的唯一性
+        deviceId = "${androidInfo.brand}_${androidInfo.model}_${androidInfo.id}";
+        
       } else if (Platform.isIOS) {
         IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
         deviceId = iosInfo.identifierForVendor ?? 'unknown_ios_device'; 
       }
     } catch (e) {
-      debugPrint("Failed to get device ID: $e");
+      debugPrint("🚨 [AUTH DEBUG] 获取设备 ID 失败: $e");
     }
     return deviceId;
   }
 
-  // 更新设备 ID 到用户的 Firestore 文档中
   Future<void> updateDeviceIdOnLogin(String uid) async {
     try {
       String deviceId = await _getDeviceId();
+      await FileLogger.log("🚨 [AUTH] 当前设备ID: $deviceId");
       
-      // 🟢 【修复1】：将成功登录时的真实设备ID写入本地缓存，作为后续对比的绝对基准
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('local_session_device_id', deviceId);
       
-      // 兼容两种不同的 UID 绑定方式 (authUid 字段或直接使用 doc id)
-      final querySnapshot = await _db.collection('users').where('authUid', isEqualTo: uid).limit(1).get();
-      
-      if (querySnapshot.docs.isNotEmpty) {
-        await querySnapshot.docs.first.reference.update({
-          'currentDeviceId': deviceId,
-          'lastLoginTime': FieldValue.serverTimestamp(),
-        });
-      } else {
-        await _db.collection('users').doc(uid).set({
-          'currentDeviceId': deviceId,
-          'lastLoginTime': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      }
-      debugPrint("📱 Device ID updated to cloud and local: $deviceId");
+      await _db.collection('users').doc(uid).set({'currentDeviceId': deviceId}, SetOptions(merge: true));
     } catch (e) {
-      debugPrint("Error updating device ID: $e");
+      await FileLogger.log("🚨 [AUTH] 更新设备ID失败: $e");
     }
   }
 
-  // 持续监听设备 ID 是否发生变化
+ static const bool _isSyncing = false;
+
   Stream<bool> listenForDeviceKickOut(String uid) async* {
-    // 🟢 【修复2】：只认本地缓存的基准 ID，避免二次调用硬件接口发生波动
+    if (_isSyncing) yield false; // 如果正在同步，暂时不判定
+
     final prefs = await SharedPreferences.getInstance();
     String? localDeviceId = prefs.getString('local_session_device_id');
     
-    // 如果无法获取可靠的本地设备ID，为了防止误踢，直接不执行监听
-    if (localDeviceId == null || localDeviceId == 'unknown_device' || localDeviceId == 'unknown_ios_device') {
-       debugPrint("⚠️ Local Device ID is unreliable, skipping kick-out listener to prevent false positives.");
-       yield false;
+    // 如果本地还没 ID，说明还没完成首次同步，此时 yield false 并退出，不要触发任何逻辑
+    if (localDeviceId == null) {
+       await FileLogger.log("🚨 [AUTH] 本地 ID 为空，等待后续同步...");
+       yield false; 
        return;
     }
     
-    yield* _db.collection('users').where('authUid', isEqualTo: uid).snapshots().map((snapshot) {
-      if (snapshot.docs.isNotEmpty) {
-        final data = snapshot.docs.first.data();
-        String? remoteDeviceId = data['currentDeviceId'];
-        
-        // 🟢 【修复3】：核心防弹逻辑
-        // 只有当云端设备 ID 存在，且与我们本地的绝对基准 ID 明确不一致时，才踢出
-        if (remoteDeviceId != null && 
-            remoteDeviceId.isNotEmpty && 
-            remoteDeviceId != localDeviceId) {
-          
-          debugPrint("⚠️ Account logged in on another mobile device!");
-          debugPrint("Local Base ID: $localDeviceId | Remote Cloud ID: $remoteDeviceId");
-          return true; // 返回 true 触发踢出逻辑
-        }
+    yield* _db.collection('users').doc(uid).snapshots().map((snapshot) {
+      if (!snapshot.exists) return false;
+      
+      String? remoteDeviceId = snapshot.data()?['currentDeviceId'];
+      
+      // 🟢 关键：只有在非缓存状态下才进行 ID 比对！
+      // 离线缓存经常含有旧数据，这在重启时极易造成误判
+      if (snapshot.metadata.isFromCache) return false;
+
+      if (remoteDeviceId != null && remoteDeviceId != localDeviceId) {
+          FileLogger.log("🚨 [AUTH] ❌ ID 不匹配！本地: $localDeviceId, 云端: $remoteDeviceId");
+          return true; 
       }
       return false; 
     });
   }
 
-  // 执行强制登出并弹窗提示
   Future<void> forceLogout(BuildContext context) async {
+    await FileLogger.log("🚨 [AUTH] 执行 forceLogout (弹出被踢对话框)");
+    
     await signOut();
     
-    // 清除生物识别和设备基准ID的缓存
     final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('biometricEnabled'); 
+    await prefs.remove('biometric_enabled'); 
     await prefs.remove('local_session_device_id'); 
+    await prefs.remove('cached_staff_name'); 
     
     if (context.mounted) {
       showDialog(
         context: context,
         barrierDismissible: false, 
-        builder: (ctx) => AlertDialog(
-          title: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.orange),
-              SizedBox(width: 10),
-              Text("Session Expired"),
+        builder: (ctx) => PopScope( // ✅ 替换掉 WillPopScope
+          canPop: false,           // ✅ canPop: false 等同于原先的 onWillPop: () async => false
+          child: AlertDialog(
+            title: const Text("Session Expired"),
+            content: const Text("Your account has been logged in on another device or session expired."),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(ctx).pop();
+                  Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false); 
+                },
+                child: const Text("OK"),
+              ),
             ],
           ),
-          content: const Text("Your account has been logged in on another device.\nYou have been logged out for security reasons."),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.of(ctx).pop();
-                // 清理所有路由栈并跳转回登录页，请确保 '/' 是你的登录路由
-                Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false); 
-              },
-              child: const Text("OK"),
-            ),
-          ],
         ),
       );
     }

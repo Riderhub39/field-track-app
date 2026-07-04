@@ -1,12 +1,11 @@
 import 'dart:io'; // 🟢 新增：引入 dart:io 以使用 Platform
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
-
+import 'login_controller.dart';
 import '../services/notification_service.dart';
 
 // ==========================================
@@ -88,9 +87,11 @@ class SettingsNotifier extends AutoDisposeNotifier<SettingsState> {
     state = state.copyWith(biometricEnabled: value);
   }
 
-  Future<void> logout() async {
+ Future<void> logout() async {
     NotificationService().stopListening();
-    await FirebaseAuth.instance.signOut();
+    
+    // 调用 loginProvider 来执行加密存储清理和 Firebase 登出
+    await ref.read(loginProvider.notifier).logoutAndClear();
     
     state = state.copyWith(isLoggedOut: true);
   }

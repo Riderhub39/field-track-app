@@ -1,5 +1,5 @@
 // home_controller.dart
-
+import '../utils/file_logger.dart';
 import 'dart:async';
 import 'dart:io';
 import 'package:camera/camera.dart';
@@ -129,7 +129,6 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
   void _initAll() async {
     _checkForUpdates(); 
     _listenToUserStatus();
-    _startDeviceMonitoring();
     _listenForAnnouncements();
 
     final user = FirebaseAuth.instance.currentUser;
@@ -137,6 +136,11 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
       NotificationService().startListeningToUserUpdates(user.uid);
       _checkAndResumeTracking(user.uid);
     }
+
+    // 🟢 延迟防踢监听器的启动，确保 Auth 初始化和 ID 校验已经稳定
+    Future.delayed(const Duration(seconds: 2), () {
+      _startDeviceMonitoring();
+    });
 
     Future.delayed(const Duration(seconds: 1), _checkBiometricSetup);
   }
@@ -177,8 +181,10 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
   void _startDeviceMonitoring() {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
+      debugPrint("🚨 [HOME DEBUG] 开始调用 listenForDeviceKickOut");
       _kickOutSubscription = AuthService().listenForDeviceKickOut(user.uid).listen((shouldKickOut) {
         if (shouldKickOut) {
+          debugPrint("🚨 [HOME DEBUG] ⚠️ 收到 kicked_out 信号，准备强制登出");
           _kickOutSubscription?.cancel();
           _triggerForceLogout("kicked_out"); 
         }
@@ -186,9 +192,11 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
     }
   }
 
-  void _listenToUserStatus() {
+ void _listenToUserStatus() {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    debugPrint("🚨 [HOME DEBUG] 开始监听用户状态 _listenToUserStatus");
 
     _userStatusSubscription = FirebaseFirestore.instance
         .collection('users')
@@ -196,11 +204,16 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
         .limit(1)
         .snapshots()
         .listen((snapshot) async {
+      
+      await FileLogger.log("🚨 [HOME] 收到状态更新, 缓存: ${snapshot.metadata.isFromCache}, 文档数: ${snapshot.docs.length}");
+
       if (snapshot.docs.isNotEmpty) {
         final data = snapshot.docs.first.data();
         final status = data['status'] ?? 'active';
+        debugPrint("🚨 [HOME DEBUG] 用户状态读取成功: $status");
 
         if (status == 'disabled' || status == 'inactive') {
+          await FileLogger.log("🚨 [HOME] ⚠️ 用户状态异常 ($status)，执行强制登出");
           _triggerForceLogout(status);
           return;
         }
@@ -221,14 +234,26 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
           faceIdPhotoPath: data['faceIdPhoto'],
         );
       } else {
-        _triggerForceLogout('not_found');
+        // 🟢 优化点：引入逻辑容错
+        // 如果数据为空，我们不要立刻调用 _triggerForceLogout。
+        // 我们只在明确收到 [非缓存] 且 [确实没查到数据] 的情况时才判定为用户被删除。
+        if (!snapshot.metadata.isFromCache) {
+           await FileLogger.log("🚨 [HOME] ❌ 服务器返回数据确实为空，执行强制登出");
+           _triggerForceLogout('not_found');
+        } else {
+           // 如果是缓存返回空，说明数据库还没准备好，此时什么都不做，静静等待下一次从服务器的回调
+           await FileLogger.log("🚨 [HOME] ⚠️ 本地缓存为空，跳过检查，等待服务器同步...");
+        }
       }
-    }, onError: (error) {
-      debugPrint("Error listening to user status: $error");
+    }, onError: (error) async {
+      await FileLogger.log("🚨 [HOME] ❌ 监听用户状态发生错误: $error");
+      debugPrint("🚨 [HOME DEBUG] ❌ 监听用户状态发生错误: $error");
     });
   }
 
   void _triggerForceLogout(String reason) async {
+    await FileLogger.log("🚨 [HOME] 💥 触发强制登出: $reason");
+    debugPrint("🚨 [HOME DEBUG] 💥 触发了 _triggerForceLogout! 原因是: $reason");
     _userStatusSubscription?.cancel();
     _kickOutSubscription?.cancel();
 
@@ -239,7 +264,10 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
     }
 
     final prefs = await SharedPreferences.getInstance();
-    await prefs.clear();
+    
+    await prefs.remove('local_session_device_id');
+    await prefs.remove('cached_staff_name');
+    await prefs.remove('biometric_enabled'); 
 
     await FirebaseAuth.instance.signOut();
 
@@ -248,6 +276,18 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
       logoutReason: reason,
     );
   }
+
+
+
+
+
+
+
+
+
+
+
+
 
   void resetLogoutDialog() {
     state = state.copyWith(shouldShowLogoutDialog: false);
