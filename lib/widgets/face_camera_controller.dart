@@ -537,6 +537,12 @@ Future<String?> _processCameraImageInIsolate(Map<String, dynamic> data) async {
         // 2. 🟢 核心修复：确保在这里只调用【一次】 copyRotate！
         convertedImage = img.copyRotate(convertedImage, angle: angle);
       }
+      if (Platform.isIOS) {
+         // 如果你的照片在 iOS 上是横向的，请尝试开启下面这一行：
+        convertedImage = img.copyRotate(convertedImage, angle: 90); 
+         
+        
+      }
       
       // 3. 前置摄像头镜像翻转
       if (isFrontCamera) {
