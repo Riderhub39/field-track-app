@@ -174,35 +174,38 @@ class LeaveApplicationNotifier extends AutoDisposeNotifier<LeaveApplicationState
     if (user == null) return;
 
     try {
-      Map<String, dynamic>? userData;
-      final docSnap = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
-      
-      if (docSnap.exists) {
-        userData = docSnap.data();
-      } else {
-        final q = await FirebaseFirestore.instance.collection('users').where('personal.email', isEqualTo: user.email).limit(1).get();
-        if (q.docs.isNotEmpty) {
-          userData = q.docs.first.data();
+      // Query the 'users' collection where the 'authUid' field matches the current user's UID
+      final querySnap = await FirebaseFirestore.instance
+          .collection('users')
+          .where('authUid', isEqualTo: user.uid)
+          .limit(1)
+          .get();
+
+      if (querySnap.docs.isNotEmpty) {
+        final userData = querySnap.docs.first.data();
+
+        // Check if the leave_balance map exists in the document
+        if (userData.containsKey('leave_balance')) {
+          state = state.copyWith(
+            balances: {
+              ...state.balances,
+              ...userData['leave_balance'],
+            },
+            balanceLoaded: true,
+          );
+          return; // Early return on success
         }
       }
 
-      if (userData != null && userData.containsKey('leave_balance')) {
-        state = state.copyWith(
-          balances: {
-            ...state.balances,
-            ...userData['leave_balance']
-          },
-          balanceLoaded: true,
-        );
-      } else {
-        state = state.copyWith(balanceLoaded: true);
-      }
+      // Fallback if the user document wasn't found or 'leave_balance' is missing
+      state = state.copyWith(balanceLoaded: true);
+      
     } catch (e) {
       debugPrint("Error fetching balance: $e");
+      // Ensure the UI stops loading even if an error occurs
       state = state.copyWith(balanceLoaded: true); 
     }
   }
-
   Future<bool> _checkForDuplicateLeave(String uid, DateTime start, DateTime end) async {
     final q = await FirebaseFirestore.instance
         .collection('leaves')
