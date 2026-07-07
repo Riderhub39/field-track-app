@@ -42,11 +42,18 @@ class TrackingNotifier extends Notifier<bool> {
     final todayStr = DateFormat('yyyy-MM-dd').format(now);
     
     try {
+      // 🟢 1. 先查出真正的 Document ID (EMP001)
+      final userQuery = await FirebaseFirestore.instance.collection('users').where('authUid', isEqualTo: authUid).limit(1).get();
+      if (userQuery.docs.isEmpty) return;
+      final String empCode = userQuery.docs.first.id;
+
+      // 🟢 2. 使用真实的员工编号去查打卡记录 (如果你的打卡表里有 authUid 字段，用 authUid 也可以，但统一用 empCode 最保险)
       final attQuery = await FirebaseFirestore.instance
           .collection('attendance')
-          .where('uid', isEqualTo: authUid)
+          .where('uid', isEqualTo: empCode) // 👈 换成真实的 empCode
           .where('date', isEqualTo: todayStr)
           .get();
+
 
       if (attQuery.docs.isNotEmpty) {
         final validDocs = attQuery.docs.where((doc) {

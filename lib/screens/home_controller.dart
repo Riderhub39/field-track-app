@@ -10,7 +10,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart'; 
-// 🟢 新增：用于处理图片压缩的库
 import 'package:image/image.dart' as img; 
 import '../services/tracking_service.dart';
 import '../services/notification_service.dart';
@@ -178,17 +177,34 @@ class HomeNotifier extends AutoDisposeNotifier<HomeState> {
     state = state.copyWith(shouldShowUpdatePrompt: false);
   }
 
-  void _startDeviceMonitoring() {
+  void _startDeviceMonitoring() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      debugPrint("🚨 [HOME DEBUG] 开始调用 listenForDeviceKickOut");
-      _kickOutSubscription = AuthService().listenForDeviceKickOut(user.uid).listen((shouldKickOut) {
-        if (shouldKickOut) {
-          debugPrint("🚨 [HOME DEBUG] ⚠️ 收到 kicked_out 信号，准备强制登出");
-          _kickOutSubscription?.cancel();
-          _triggerForceLogout("kicked_out"); 
-        }
-      });
+      debugPrint("🚨 [HOME DEBUG] 开始准备 listenForDeviceKickOut");
+
+      try {
+        // 🟢 1. 先通过 authUid 找到真实的 Document ID (例如 EMP001)
+        final q = await FirebaseFirestore.instance
+            .collection('users')
+            .where('authUid', isEqualTo: user.uid)
+            .limit(1)
+            .get();
+
+        if (q.docs.isEmpty) return; // 如果找不到，直接中止，交给状态监听去处理
+        
+        final String actualDocId = q.docs.first.id; 
+
+        // 🟢 2. 传入真实的 Document ID 开始防踢监听
+        _kickOutSubscription = AuthService().listenForDeviceKickOut(actualDocId).listen((shouldKickOut) {
+          if (shouldKickOut) {
+            debugPrint("🚨 [HOME DEBUG] ⚠️ 收到 kicked_out 信号，准备强制登出");
+            _kickOutSubscription?.cancel();
+            _triggerForceLogout("kicked_out"); 
+          }
+        });
+      } catch (e) {
+        debugPrint("🚨 [HOME DEBUG] 启动防踢监听失败: $e");
+      }
     }
   }
 

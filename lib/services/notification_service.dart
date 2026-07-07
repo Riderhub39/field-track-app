@@ -146,14 +146,26 @@ class NotificationService {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool('notifications_enabled') ?? true;
   }
-
-  void startListeningToUserUpdates(String uid) {
+Future<void> startListeningToUserUpdates(String authUid) async {
     stopListening(); 
-    debugPrint("🎧 Started listening for Admin updates for UID: $uid");
+    debugPrint("🎧 Started listening for Admin updates for UID: $authUid");
 
+    // 🟢 1. 先获取真实的 Employee Code (Document ID)
+    final userQuery = await FirebaseFirestore.instance
+        .collection('users')
+        .where('authUid', isEqualTo: authUid)
+        .limit(1)
+        .get();
+        
+    String? empCode;
+    if (userQuery.docs.isNotEmpty) {
+      empCode = userQuery.docs.first.id;
+    }
+
+    // 🟢 2. Leaves 和 Attendance Corrections 使用 authUid 查询
     bool isLeaveInitial = true; 
     _subscriptions.add(
-      FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: uid).snapshots().listen((snapshot) {
+      FirebaseFirestore.instance.collection('leaves').where('authUid', isEqualTo: authUid).snapshots().listen((snapshot) {
         if (isLeaveInitial) { isLeaveInitial = false; return; } 
         for (var change in snapshot.docChanges) {
           if (change.type == DocumentChangeType.modified) {
@@ -166,7 +178,7 @@ class NotificationService {
 
     bool isCorrectionInitial = true;
     _subscriptions.add(
-      FirebaseFirestore.instance.collection('attendance_corrections').where('authUid', isEqualTo: uid).snapshots().listen((snapshot) {
+      FirebaseFirestore.instance.collection('attendance_corrections').where('authUid', isEqualTo: authUid).snapshots().listen((snapshot) {
         if (isCorrectionInitial) { isCorrectionInitial = false; return; }
         for (var change in snapshot.docChanges) {
           if (change.type == DocumentChangeType.modified) {
@@ -177,32 +189,38 @@ class NotificationService {
       })
     );
 
-    bool isProfileInitial = true;
-    _subscriptions.add(
-      FirebaseFirestore.instance.collection('edit_requests').where('uid', isEqualTo: uid).snapshots().listen((snapshot) {
-        if (isProfileInitial) { isProfileInitial = false; return; }
-        for (var change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.modified) {
-            final data = change.doc.data() ?? {};
-            _triggerNotification('Profile Update', 'Your profile update request has been ${data['status']}.');
+    // 🟢 3. Edit Requests 和 Payslips 使用真实的 empCode 查询
+    if (empCode != null) {
+      bool isProfileInitial = true;
+      _subscriptions.add(
+        FirebaseFirestore.instance.collection('edit_requests').where('uid', isEqualTo: empCode).snapshots().listen((snapshot) {
+          if (isProfileInitial) { isProfileInitial = false; return; }
+          for (var change in snapshot.docChanges) {
+            if (change.type == DocumentChangeType.modified) {
+              final data = change.doc.data() ?? {};
+              _triggerNotification('Profile Update', 'Your profile update request has been ${data['status']}.');
+            }
           }
-        }
-      })
-    );
+        })
+      );
 
-    bool isPayslipInitial = true;
-    _subscriptions.add(
-      FirebaseFirestore.instance.collection('payslips').where('uid', isEqualTo: uid).where('status', isEqualTo: 'Published').snapshots().listen((snapshot) {
-        if (isPayslipInitial) { isPayslipInitial = false; return; }
-        for (var change in snapshot.docChanges) {
-          if (change.type == DocumentChangeType.added || change.type == DocumentChangeType.modified) {
-            final data = change.doc.data() ?? {};
-            _triggerNotification('Payslip Ready', 'Your payslip for ${data['month']} is now available.');
+      bool isPayslipInitial = true;
+      _subscriptions.add(
+        FirebaseFirestore.instance.collection('payslips').where('uid', isEqualTo: empCode).where('status', isEqualTo: 'Published').snapshots().listen((snapshot) {
+          if (isPayslipInitial) { isPayslipInitial = false; return; }
+          for (var change in snapshot.docChanges) {
+            if (change.type == DocumentChangeType.added || change.type == DocumentChangeType.modified) {
+              final data = change.doc.data() ?? {};
+              _triggerNotification('Payslip Ready', 'Your payslip for ${data['month']} is now available.');
+            }
           }
-        }
-      })
-    );
+        })
+      );
+    } else {
+      debugPrint("⚠️ Warning: Could not find Employee Code for UID: $authUid. Notifications for payslips and profile updates won't be triggered.");
+    }
     
+    // 🟢 4. Announcements 是全局广播，保持不变
     bool isAnnounceInitial = true;
     _subscriptions.add(
       FirebaseFirestore.instance.collection('announcements').orderBy('createdAt', descending: true).limit(1).snapshots().listen((snapshot) {
@@ -216,7 +234,6 @@ class NotificationService {
       })
     );
   }
-
   Future<void> _triggerNotification(String title, String body) async {
     if (!await _canShowNotification()) {
       debugPrint("🔕 Notification blocked by user settings.");
