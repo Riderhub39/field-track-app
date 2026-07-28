@@ -1,7 +1,7 @@
 name: field_track_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 1.1.8+19
+version: 1.1.9+20
 
 environment:
 
@@ -59,7 +59,7 @@ dependencies:
   network_info_plus: ^5.0.1
   device_info_plus: ^12.3.0
   package_info_plus: ^9.0.0
-  
+  cloud_functions: ^5.6.2
   provider: ^6.1.2
   flutter_riverpod: ^2.4.9
   riverpod: ^2.4.9

@@ -4,10 +4,11 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart'; // 🔴 新增：引入云函数
 import 'package:http/http.dart' as http;
 
 // ==========================================
-// 1. 状态定义 (State) - 保持不变
+// 1. 状态定义 (State)
 // ==========================================
 class RegisterState {
   final int currentStep; // 1: 验证身份, 2: 设置密码
@@ -71,7 +72,6 @@ class RegisterState {
 // ==========================================
 // 2. 逻辑控制器 (Controller)
 // ==========================================
-// 🔴 CHANGED: 迁移到 AutoDisposeNotifier
 class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -83,7 +83,6 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
   final String _templateId = 'template_xbyycfv'; 
   final String _userId = 'cAFMGx8vJypXWEBAX';
 
-  // 🔴 CHANGED: 使用 build 方法初始化并注册清理器
   @override
   RegisterState build() {
     ref.onDispose(() {
@@ -106,7 +105,6 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
     state = state.copyWith(cooldownSeconds: 60);
     _timer?.cancel();
     
-    // 🔴 CHANGED: 移除了定时器内的 mounted 检查，因为 onDispose 已经保证了页面销毁时定时器会被取消
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (state.cooldownSeconds > 0) {
         state = state.copyWith(cooldownSeconds: state.cooldownSeconds - 1);
@@ -209,7 +207,7 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
           maskedEmail: masked,
           foundDocId: docId,
           foundData: data,
-          successMessage: isPhoneInput ? "register.phone_found_email_sent" : "register.otp_sent_success" // 兼容多语言提示
+          successMessage: isPhoneInput ? "register.phone_found_email_sent" : "register.otp_sent_success" 
         );
         
         _startCooldown();
@@ -229,7 +227,6 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
 
     state = state.copyWith(isLoading: true, clearMessages: true);
     
-    // 模拟一下延迟，增加一点 UI 反馈
     Future.delayed(const Duration(milliseconds: 500), () {
       if (smsCode == state.expectedEmailOtp || smsCode == "123456") { 
         state = state.copyWith(
@@ -242,21 +239,33 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
     });
   }
 
+  // 🔴 核心修改逻辑
   Future<void> finalizeAccount(String password, bool isResetMode) async {
     state = state.copyWith(isLoading: true, clearMessages: true);
 
     try {
       String email = state.foundData?['personal']?['email'] ?? "";
+      String? authUid = state.foundData?['authUid']; // 🔴 提取用户的 authUid
+
       if (isResetMode) {
-        if (_auth.currentUser != null) {
-           await _auth.currentUser!.updatePassword(password);
-        } else {
-           await _auth.sendPasswordResetEmail(email: email);
-           state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
-           return; 
+        // 🔴 调用云函数直接强制重置密码
+        if (authUid == null || authUid.isEmpty) {
+          throw "Account not activated or UID not found.";
         }
+
+        // 调用名为 'resetUserPassword' 的云函数
+        final HttpsCallable callable = FirebaseFunctions.instanceFor(region: 'asia-southeast1').httpsCallable('resetUserPassword');
+        
+        await callable.call(<String, dynamic>{
+          'uid': authUid,
+          'newPassword': password,
+        });
+
+        // 成功后关闭页面并提示
         state = state.copyWith(shouldPop: true, successMessage: "register.success_reset");
+        
       } else {
+        // 原有首次激活逻辑
         UserCredential userCred = await _auth.createUserWithEmailAndPassword(email: email, password: password);
         await _db.collection('users').doc(state.foundDocId).update({
           'authUid': userCred.user!.uid,
@@ -267,13 +276,15 @@ class RegisterNotifier extends AutoDisposeNotifier<RegisterState> {
         
         state = state.copyWith(shouldPop: true, successMessage: "register.success_login");
       }
+    } on FirebaseFunctionsException catch (e) {
+      // 捕获云函数的报错信息
+      state = state.copyWith(isLoading: false, errorMessage: "Cloud Error: ${e.message}");
     } catch (e) {
       state = state.copyWith(isLoading: false, errorMessage: "Error: $e");
     }
   }
 }
 
-// 🔴 CHANGED: 暴露 Provider 使用 NotifierProvider 语法
 final registerProvider = NotifierProvider.autoDispose<RegisterNotifier, RegisterState>(() {
   return RegisterNotifier();
 });
